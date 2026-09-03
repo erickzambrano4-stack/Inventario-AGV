@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "Item": {
+      "title": "Item",
+      "description": "Producto o insumo en el catálogo de inventario",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 40 },
+        "desc": { "type": "string", "maxLength": 150 },
+        "unidad": { "type": "string", "maxLength": 20 },
+        "area": { "type": "string", "maxLength": 60 },
+        "reorden": { "type": "number" }
+      },
+      "required": ["id", "desc", "unidad", "reorden"]
+    },
+    "Transaccion": {
+      "title": "Transaccion",
+      "description": "Movimiento de recepción (entrada) o despacho (salida) de inventario",
+      "type": "object",
+      "properties": {
+        "idDoc": { "type": "string", "maxLength": 50 },
+        "tipo": { "type": "string", "enum": ["entrada", "salida"] },
+        "itemId": { "type": "string", "maxLength": 40 },
+        "qty": { "type": "number" },
+        "up": { "type": "string", "maxLength": 50 },
+        "fecha": { "type": "string", "maxLength": 10 },
+        "notas": { "type": "string", "maxLength": 300 },
+        "usuario": { "type": "string", "maxLength": 40 },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["idDoc", "tipo", "itemId", "qty", "up", "fecha", "usuario", "timestamp"]
+    },
+    "Usuario": {
+      "title": "Usuario",
+      "description": "Perfil de usuario del sistema de inventario",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "maxLength": 30 },
+        "password": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "maxLength": 80 },
+        "role": { "type": "string", "enum": ["admin", "operador"] },
+        "up": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["username", "name", "role", "up"]
+    },
+    "Configuracion": {
+      "title": "Configuracion",
+      "description": "Ajustes de marca y apariencia",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string", "maxLength": 50 },
+        "logoUrl": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["appName"]
+    }
+  },
+  "firestore": {
+    "/items/{itemId}": {
+      "schema": "Item",
+      "description": "Catálogo maestro de ítems y puntos de reorden"
+    },
+    "/transacciones/{idDoc}": {
+      "schema": "Transaccion",
+      "description": "Movimientos de entrada y salida"
+    },
+    "/usuarios/{username}": {
+      "schema": "Usuario",
+      "description": "Cuentas de usuarios y roles"
+    },
+    "/configuracion/{docId}": {
+      "schema": "Configuracion",
+      "description": "Configuración del sistema"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <script>
+      (function() {
+        try {
+          var originalFetch = window.fetch;
+          var currentFetch = originalFetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return currentFetch;
+            },
+            set: function(fn) {
+              currentFetch = fn;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          try {
+            if (typeof Window !== 'undefined' && Window.prototype) {
+              var protoFetch = Window.prototype.fetch;
+              Object.defineProperty(Window.prototype, 'fetch', {
+                get: function() {
+                  return protoFetch;
+                },
+                set: function(fn) {
+                  protoFetch = fn;
+                },
+                configurable: true,
+                enumerable: true
+              });
+            }
+          } catch (err) {
+            console.warn('Fetch setter patch error:', err);
+          }
+        }
+      })();
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sistema de Inventario</title>
+    <meta name="description" content="Sistema profesional de control de inventario con gestión de entradas, salidas, puntos de reorden, ubicaciones UP y sincronización en la nube con Firebase." />
+    <meta property="og:title" content="Sistema de Inventario" />
+    <meta property="og:description" content="Sistema profesional de control de inventario con gestión de entradas, salidas, puntos de reorden, ubicaciones UP y sincronización en la nube con Firebase." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  </head>
+  <body class="bg-slate-50 text-slate-900 antialiased font-[Inter,sans-serif]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

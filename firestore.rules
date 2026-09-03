@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Reglas de seguridad para InvControl Pro (inventarios-subacopios)
+    
+    // Función de ayuda para validación de ID
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    match /items/{itemId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /transacciones/{idDoc} {
+      allow read: if true;
+      allow create: if request.resource.data.qty > 0;
+      allow delete, update: if true;
+    }
+
+    match /usuarios/{username} {
+      allow read, write: if true;
+    }
+
+    match /configuracion/{docId} {
+      allow read, write: if true;
+    }
+
+    // Regla de prueba de conexión
+    match /_connection_test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Bloqueo por defecto para cualquier otra colección
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

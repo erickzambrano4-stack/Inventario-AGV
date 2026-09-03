@@ -1,0 +1,8 @@
+{
+  "name": "Sistema de Inventario",
+  "description": "Sistema profesional de control de inventario con gestión de entradas, salidas, puntos de reorden, ubicaciones UP y sincronización en la nube con Firebase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
