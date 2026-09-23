@@ -22,8 +22,6 @@ import { downloadCsv, csvEscape } from '../lib/security';
 import { ConfirmModal } from './ConfirmModal';
 import { ReportModal } from './ReportModal';
 
-const PAGE_SIZE = 10;
-
 export const HistorialView: React.FC = () => {
   const {
     transacciones,
@@ -46,6 +44,7 @@ export const HistorialView: React.FC = () => {
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(25);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
   // Sync upFilter if permissions change
@@ -102,11 +101,11 @@ export const HistorialView: React.FC = () => {
     });
   }, [authorizedTransactions, typeFilter, upFilter, search, items, isGlobalAccess]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageItems = useMemo(() => {
-    const start = (currentPage - 1) * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, currentPage]);
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
 
   const handleExportCSV = () => {
     if (transacciones.length === 0) {
@@ -392,6 +391,23 @@ export const HistorialView: React.FC = () => {
               <span>UP: {availableUps[0] || primaryUp}</span>
             </div>
           )}
+          {/* Lines / Page size selector */}
+          <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
+            <span className="font-semibold text-gray-500">Ver:</span>
+            <select
+              value={pageSize}
+              onChange={e => {
+                setPageSize(Number(e.target.value));
+                setCurrentPage(1);
+              }}
+              className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer"
+            >
+              <option value={10}>10 líneas</option>
+              <option value={25}>25 líneas</option>
+              <option value={50}>50 líneas</option>
+              <option value={100}>100 líneas</option>
+            </select>
+          </div>
         </div>
 
         {/* Search */}
@@ -579,10 +595,28 @@ export const HistorialView: React.FC = () => {
         {/* Pagination */}
         {filtered.length > 0 && (
           <div className="flex flex-col sm:flex-row items-center justify-between px-6 py-3.5 border-t border-gray-100 bg-gray-50/40 gap-3">
-            <p className="text-xs text-gray-500">
-              Mostrando {Math.min((currentPage - 1) * PAGE_SIZE + 1, filtered.length)} a{' '}
-              {Math.min(currentPage * PAGE_SIZE, filtered.length)} de {filtered.length} movimientos
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-xs text-gray-500">
+                Mostrando {Math.min((currentPage - 1) * pageSize + 1, filtered.length)} a{' '}
+                {Math.min(currentPage * pageSize, filtered.length)} de {filtered.length} movimientos
+              </p>
+              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                <span>Por página:</span>
+                <select
+                  value={pageSize}
+                  onChange={e => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="bg-white border border-gray-200 text-gray-700 py-1 px-2 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value={10}>10 líneas</option>
+                  <option value={25}>25 líneas</option>
+                  <option value={50}>50 líneas</option>
+                  <option value={100}>100 líneas</option>
+                </select>
+              </div>
+            </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}

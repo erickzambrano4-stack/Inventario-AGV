@@ -7,6 +7,7 @@ import {
   Edit2,
   Trash2,
   Search,
+  Filter,
   ChevronLeft,
   ChevronRight,
   AlertCircle,
@@ -51,8 +52,9 @@ export const ItemsView: React.FC = () => {
   const [newReorden, setNewReorden] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Search & Pagination
+  // Search, Area Filter & Pagination
   const [search, setSearch] = useState('');
+  const [selectedArea, setSelectedArea] = useState<string>('ALL');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(25);
 
@@ -65,15 +67,48 @@ export const ItemsView: React.FC = () => {
   // Delete modal state
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
+  // Available unique areas from items
+  const availableAreas = useMemo(() => {
+    const set = new Set<string>();
+    let hasEmpty = false;
+    items.forEach(i => {
+      const a = (i.area || '').trim();
+      if (a) {
+        set.add(a.toUpperCase());
+      } else {
+        hasEmpty = true;
+      }
+    });
+    const sorted = Array.from(set).sort();
+    if (hasEmpty) {
+      sorted.push('SIN ÁREA');
+    }
+    return sorted;
+  }, [items]);
+
   // Filtered items
   const filtered = useMemo(() => {
-    return items.filter(
-      i =>
-        i.id.toLowerCase().includes(search.toLowerCase()) ||
-        i.desc.toLowerCase().includes(search.toLowerCase()) ||
-        (i.area && i.area.toLowerCase().includes(search.toLowerCase()))
-    );
-  }, [items, search]);
+    return items.filter(i => {
+      if (selectedArea !== 'ALL') {
+        const itemArea = (i.area || '').trim().toUpperCase();
+        if (selectedArea === 'SIN ÁREA') {
+          if (itemArea !== '') return false;
+        } else {
+          if (itemArea !== selectedArea) return false;
+        }
+      }
+
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchId = i.id.toLowerCase().includes(q);
+        const matchDesc = i.desc.toLowerCase().includes(q);
+        const matchArea = Boolean(i.area && i.area.toLowerCase().includes(q));
+        if (!matchId && !matchDesc && !matchArea) return false;
+      }
+
+      return true;
+    });
+  }, [items, search, selectedArea]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageItems = useMemo(() => {
@@ -386,27 +421,90 @@ export const ItemsView: React.FC = () => {
 
       {/* Catalog Table */}
       <div className="bg-white border border-gray-100 rounded-3xl shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 bg-gray-50/40">
+        <div className="px-6 py-4 border-b border-gray-100 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-gray-50/40">
           <div>
             <h3 className="font-bold text-gray-900 text-base flex items-center gap-2">
               <Package className="w-4 h-4 text-blue-600" />
-              Catálogo de Productos ({items.length})
+              <span>Catálogo de Productos</span>
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                {filtered.length} {filtered.length === items.length ? 'artículos' : `de ${items.length}`}
+              </span>
             </h3>
-            <p className="text-xs text-gray-500">Base maestra de artículos disponibles para el sistema de inventario</p>
+            <p className="text-xs text-gray-500">
+              Base maestra de artículos disponibles para el sistema de inventario
+              {selectedArea !== 'ALL' && (
+                <span className="ml-1 text-blue-600 font-semibold">• Filtrando por área: {selectedArea}</span>
+              )}
+            </p>
           </div>
 
-          <div className="relative w-full sm:w-64">
-            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={search}
-              onChange={e => {
-                setSearch(e.target.value);
-                setCurrentPage(1);
-              }}
-              placeholder="Buscar ítem..."
-              className="w-full pl-9 pr-3 py-1.5 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-600 outline-none"
-            />
+          <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+            {/* Area Filter Selector */}
+            <div className="flex items-center gap-1.5 bg-white border border-gray-200 px-3 py-1.5 rounded-xl text-xs shadow-2xs">
+              <Filter className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span className="font-semibold text-gray-500">Área:</span>
+              <select
+                value={selectedArea}
+                onChange={e => {
+                  setSelectedArea(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[160px] truncate"
+              >
+                <option value="ALL">Todas las áreas ({items.length})</option>
+                {availableAreas.map(area => {
+                  const count = items.filter(i => {
+                    const itemArea = (i.area || '').trim().toUpperCase();
+                    return area === 'SIN ÁREA' ? itemArea === '' : itemArea === area;
+                  }).length;
+                  return (
+                    <option key={area} value={area}>
+                      {area} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+              {selectedArea !== 'ALL' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedArea('ALL');
+                    setCurrentPage(1);
+                  }}
+                  className="text-gray-400 hover:text-rose-600 ml-1 p-0.5"
+                  title="Restablecer a todas las áreas"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Search Input */}
+            <div className="relative w-full sm:w-60">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={search}
+                onChange={e => {
+                  setSearch(e.target.value);
+                  setCurrentPage(1);
+                }}
+                placeholder="Buscar por código o descripción..."
+                className="w-full pl-9 pr-8 py-1.5 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-600 outline-none"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearch('');
+                    setCurrentPage(1);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
