@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useInventory } from '../context/InventoryContext';
-import { INITIAL_UPS } from '../types';
 import {
   Search,
   FileSpreadsheet,
   Package,
+  PackageCheck,
   ArrowDownLeft,
   ArrowUpRight,
   AlertTriangle,
@@ -14,9 +14,16 @@ import {
   ChevronRight,
   ArrowUpDown,
   Filter,
-  CheckCircle2
+  CheckCircle2,
+  MapPin,
+  X,
+  Layers,
+  Lock,
+  Shield,
+  Download
 } from 'lucide-react';
 import { downloadCsv, csvEscape } from '../lib/security';
+import { ReportModal } from './ReportModal';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -30,7 +37,34 @@ import {
 } from 'recharts';
 
 export const DashboardView: React.FC = () => {
-  const { inventario, stats, showToast } = useInventory();
+  const {
+    inventario,
+    transacciones,
+    stats,
+    ups,
+    currentUser,
+    userAllowedUps,
+    isGlobalAccess,
+    primaryUp,
+    showToast
+  } = useInventory();
+
+  // UP Filter state for the Dashboard - restricted users default to their authorized UP
+  const [selectedUp, setSelectedUp] = useState<string>(() => {
+    return isGlobalAccess ? 'all' : primaryUp;
+  });
+  // Option to only show products with active inventory / stock > 0
+  const [onlyWithStock, setOnlyWithStock] = useState<boolean>(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+
+  // Sync selectedUp if user permissions or userAllowedUps change
+  React.useEffect(() => {
+    if (!isGlobalAccess) {
+      if (selectedUp === 'all' || !userAllowedUps.includes(selectedUp.toUpperCase())) {
+        setSelectedUp(primaryUp);
+      }
+    }
+  }, [isGlobalAccess, userAllowedUps, primaryUp, selectedUp]);
 
   // Table search & pagination state
   const [search, setSearch] = useState('');
@@ -43,6 +77,18 @@ export const DashboardView: React.FC = () => {
   const [chartAreaFilter, setChartAreaFilter] = useState<string>('all');
   const [chartType, setChartType] = useState<'points' | 'bars'>('points');
 
+  // Dynamic available UPs (filtered strictly by user authorization)
+  const availableUps = useMemo(() => {
+    if (!isGlobalAccess) {
+      return userAllowedUps;
+    }
+    const upsSet = new Set<string>(ups);
+    transacciones.forEach(t => {
+      if (t.up) upsSet.add(t.up.trim().toUpperCase());
+    });
+    return Array.from(upsSet);
+  }, [ups, transacciones, isGlobalAccess, userAllowedUps]);
+
   // Distinct areas for filters
   const uniqueAreas = useMemo(() => {
     const areas = new Set<string>();
@@ -52,18 +98,82 @@ export const DashboardView: React.FC = () => {
     return Array.from(areas).sort();
   }, [inventario]);
 
+  // Total items with inventory (> 0) in the currently active view
+  const currentTotalWithStock = useMemo(() => {
+    const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+    return inventario.filter(i => {
+      const stock = (effectiveUp === 'all' && isGlobalAccess)
+        ? i.stockTotal
+        : (i.upStock[effectiveUp] || 0);
+      return stock > 0;
+    }).length;
+  }, [inventario, selectedUp, isGlobalAccess, primaryUp]);
+
+  // Dynamic KPI Stats adapted strictly to authorized UP and onlyWithStock filter
+  const dashboardStats = useMemo(() => {
+    const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+    const isFilteredByUp = effectiveUp !== 'all' || !isGlobalAccess;
+
+    const withStockGlobal = inventario.filter(i => i.stockTotal > 0).length;
+    const withStockUp = inventario.filter(i => (i.upStock[effectiveUp] || 0) > 0).length;
+
+    if (!isFilteredByUp) {
+      return {
+        totalItems: onlyWithStock ? withStockGlobal : stats.totalItems,
+        catalogTotal: stats.totalItems,
+        withStockCount: withStockGlobal,
+        totalEntradas: stats.totalEntradas,
+        totalSalidas: stats.totalSalidas,
+        alertas: stats.alertas,
+        isUpFiltered: false,
+        upName: 'Todas las UPs'
+      };
+    }
+
+    const currentTargetUp = effectiveUp;
+    const entradasInUp = transacciones.filter(
+      t => t.tipo === 'entrada' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
+    ).length;
+    const salidasInUp = transacciones.filter(
+      t => t.tipo === 'salida' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
+    ).length;
+    const alertasInUp = inventario.filter(
+      i => (i.upStock[currentTargetUp] || 0) <= (i.reorden || 0)
+    ).length;
+
+    return {
+      totalItems: onlyWithStock ? withStockUp : inventario.length,
+      catalogTotal: inventario.length,
+      withStockCount: withStockUp,
+      totalEntradas: entradasInUp,
+      totalSalidas: salidasInUp,
+      alertas: alertasInUp,
+      isUpFiltered: true,
+      upName: currentTargetUp
+    };
+  }, [selectedUp, isGlobalAccess, primaryUp, stats, inventario, transacciones, onlyWithStock]);
+
   // Filter products for table
   const filtered = useMemo(() => {
+    const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+
     return inventario.filter(item => {
       const matchQuery =
         item.id.toLowerCase().includes(search.toLowerCase()) ||
         item.desc.toLowerCase().includes(search.toLowerCase()) ||
         (item.area && item.area.toLowerCase().includes(search.toLowerCase()));
 
-      const isAlert = item.stockTotal <= (item.reorden || 0);
-      return filterAlertsOnly ? matchQuery && isAlert : matchQuery;
+      const currentStock = (effectiveUp === 'all' && isGlobalAccess)
+        ? item.stockTotal
+        : (item.upStock[effectiveUp] || 0);
+
+      const isAlert = currentStock <= (item.reorden || 0);
+      const matchesAlert = filterAlertsOnly ? isAlert : true;
+      const matchesStock = onlyWithStock ? currentStock > 0 : true;
+
+      return matchQuery && matchesAlert && matchesStock;
     });
-  }, [inventario, search, filterAlertsOnly]);
+  }, [inventario, search, filterAlertsOnly, selectedUp, onlyWithStock, isGlobalAccess, primaryUp]);
 
   // Table Pagination
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -91,26 +201,43 @@ export const DashboardView: React.FC = () => {
       );
     }
 
-    // Sorting logic
+    // Option to only display products with stock > 0
+    if (onlyWithStock) {
+      const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+      items = items.filter(i => {
+        const stock = (effectiveUp === 'all' && isGlobalAccess)
+          ? i.stockTotal
+          : (i.upStock[effectiveUp] || 0);
+        return stock > 0;
+      });
+    }
+
+    // Sorting logic based on active UP stock or total stock
     items.sort((a, b) => {
+      const stockA = selectedUp === 'all' ? a.stockTotal : (a.upStock[selectedUp] || 0);
+      const stockB = selectedUp === 'all' ? b.stockTotal : (b.upStock[selectedUp] || 0);
+      const reordenA = a.reorden || 0;
+      const reordenB = b.reorden || 0;
+
       if (chartSort === 'alertas') {
-        const aCrit = a.stockTotal <= (a.reorden || 0) ? 1 : 0;
-        const bCrit = b.stockTotal <= (b.reorden || 0) ? 1 : 0;
+        const aCrit = stockA <= reordenA ? 1 : 0;
+        const bCrit = stockB <= reordenB ? 1 : 0;
         if (aCrit !== bCrit) return bCrit - aCrit;
-        return a.stockTotal - b.stockTotal;
+        return stockA - stockB;
       }
       if (chartSort === 'menor_stock') {
-        return a.stockTotal - b.stockTotal;
+        return stockA - stockB;
       }
       if (chartSort === 'mayor_stock') {
-        return b.stockTotal - a.stockTotal;
+        return stockB - stockA;
       }
       // Por nombre de producto
       return a.desc.localeCompare(b.desc);
     });
 
     return items.map(item => {
-      const isAlert = item.stockTotal <= (item.reorden || 0);
+      const stockToDisplay = selectedUp === 'all' ? item.stockTotal : (item.upStock[selectedUp] || 0);
+      const isAlert = stockToDisplay <= (item.reorden || 0);
       // Format short display name for X-axis while preserving full name in tooltip
       const truncatedName =
         item.desc.length > 24 ? `${item.desc.substring(0, 22)}...` : item.desc;
@@ -121,48 +248,101 @@ export const DashboardView: React.FC = () => {
         id: item.id,
         area: item.area || 'GENERAL',
         unidad: item.unidad || 'PZ',
-        stock: item.stockTotal,
+        stock: stockToDisplay,
+        stockTotalGlobal: item.stockTotal,
         reorden: item.reorden || 0,
         isAlert,
-        upStock: item.upStock
+        upStock: item.upStock,
+        activeUp: selectedUp
       };
     });
-  }, [inventario, chartAreaFilter, search, chartSort]);
+  }, [inventario, chartAreaFilter, search, chartSort, selectedUp, onlyWithStock, isGlobalAccess, primaryUp]);
 
   // Dynamic minimum width so all product names have sufficient room horizontally
   const chartMinWidth = useMemo(() => {
     return Math.max(700, chartData.length * 130);
   }, [chartData.length]);
 
-  // Export to CSV
+  // Export to CSV directly matching current filter
   const handleExportCSV = () => {
-    if (inventario.length === 0) {
-      showToast('No hay datos de inventario para exportar', 'warning');
+    const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+    const itemsToExport = onlyWithStock
+      ? inventario.filter(item => {
+          if (effectiveUp === 'all' && isGlobalAccess) return item.stockTotal > 0;
+          return (item.upStock[effectiveUp] || 0) > 0;
+        })
+      : inventario;
+
+    if (itemsToExport.length === 0) {
+      showToast('No hay datos de inventario para exportar con los filtros seleccionados', 'warning');
       return;
     }
 
-    const headers = ['Codigo', 'Descripcion', 'Area', 'Punto_Reorden', 'Stock_Total'];
-    INITIAL_UPS.forEach(up => headers.push(`UP_${up.replace(/\s+/g, '_')}`));
+    const today = new Date().toISOString().split('T')[0];
 
-    const rows: string[] = [headers.join(',')];
+    if (selectedUp === 'all') {
+      const headers = ['Codigo', 'Descripcion', 'Area', 'Punto_Reorden', isGlobalAccess ? 'Stock_Total_Consolidado' : 'Stock_Sedes_Autorizadas'];
+      availableUps.forEach(up => headers.push(`Stock_${up.replace(/\s+/g, '_')}`));
 
-    inventario.forEach(item => {
-      const row = [
-        csvEscape(item.id),
-        csvEscape(item.desc),
-        csvEscape(item.area || 'GENERAL'),
-        item.reorden || 0,
-        item.stockTotal
-      ];
-      INITIAL_UPS.forEach(up => {
-        row.push(item.upStock[up] !== undefined ? String(item.upStock[up]) : '0');
+      const rows: string[] = [headers.join(',')];
+
+      itemsToExport.forEach(item => {
+        const row = [
+          csvEscape(item.id),
+          csvEscape(item.desc),
+          csvEscape(item.area || 'GENERAL'),
+          item.reorden || 0,
+          isGlobalAccess
+            ? item.stockTotal
+            : availableUps.reduce((acc, u) => acc + (item.upStock[u] || 0), 0)
+        ];
+        availableUps.forEach(up => {
+          row.push(item.upStock[up] !== undefined ? String(item.upStock[up]) : '0');
+        });
+        rows.push(row.join(','));
       });
-      rows.push(row.join(','));
-    });
 
-    const csvContent = rows.join('\n');
-    downloadCsv(`Inventario_General_${new Date().toISOString().split('T')[0]}.csv`, csvContent);
-    showToast('Archivo CSV de inventario exportado con éxito', 'success');
+      downloadCsv(`Inventario_Consolidado_${onlyWithStock ? 'ConStock_' : ''}${today}.csv`, rows.join('\n'));
+      showToast(`Archivo CSV exportado con éxito (${itemsToExport.length} productos)`, 'success');
+    } else {
+      const upTag = selectedUp.replace(/\s+/g, '_');
+      const headers = [
+        'Codigo',
+        'Descripcion',
+        'Area',
+        'Ubicacion_UP',
+        `Stock_en_${upTag}`,
+        'Punto_Reorden',
+        'Estado'
+      ];
+      if (isGlobalAccess) {
+        headers.push('Stock_Total_Global');
+      }
+      const rows: string[] = [headers.join(',')];
+
+      itemsToExport.forEach(item => {
+        const upQty = item.upStock[selectedUp] || 0;
+        const reorden = item.reorden || 0;
+        const estado = upQty <= reorden ? 'ALERTA' : 'OPTIMO';
+
+        const row = [
+          csvEscape(item.id),
+          csvEscape(item.desc),
+          csvEscape(item.area || 'GENERAL'),
+          csvEscape(selectedUp),
+          upQty,
+          reorden,
+          estado
+        ];
+        if (isGlobalAccess) {
+          row.push(item.stockTotal);
+        }
+        rows.push(row.join(','));
+      });
+
+      downloadCsv(`Inventario_${upTag}_${onlyWithStock ? 'ConStock_' : ''}${today}.csv`, rows.join('\n'));
+      showToast(`Archivo CSV de ${selectedUp} exportado con éxito (${itemsToExport.length} productos)`, 'success');
+    }
   };
 
   // Custom rich tooltip for horizontal chart displaying product names
@@ -195,12 +375,21 @@ export const DashboardView: React.FC = () => {
           <div className="flex justify-between items-center">
             <span className="text-slate-400 flex items-center gap-1.5">
               <span className={`w-2.5 h-2.5 rounded-full inline-block shadow-sm ${data.isAlert ? 'bg-rose-500' : 'bg-blue-500'}`} />
-              Stock Actual:
+              {data.activeUp === 'all' ? 'Stock Total:' : `Stock en ${data.activeUp}:`}
             </span>
             <span className={`font-black text-sm ${data.isAlert ? 'text-rose-400' : 'text-blue-400'}`}>
               {Number(data.stock).toLocaleString()} {data.unidad}
             </span>
           </div>
+
+          {data.activeUp !== 'all' && isGlobalAccess && (
+            <div className="flex justify-between items-center text-[11px] text-slate-400">
+              <span>Total Global Consolidado:</span>
+              <span className="font-semibold text-slate-300">
+                {Number(data.stockTotalGlobal).toLocaleString()} {data.unidad}
+              </span>
+            </div>
+          )}
 
           <div className="flex justify-between items-center">
             <span className="text-slate-400 flex items-center gap-1.5">
@@ -236,7 +425,12 @@ export const DashboardView: React.FC = () => {
             <p className="font-semibold text-slate-300 mb-1">Existencias en Subacopios (UP):</p>
             <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 bg-slate-950/50 p-2 rounded border border-slate-800">
               {Object.entries(data.upStock).map(([up, qty]) => (
-                <div key={up} className="flex justify-between">
+                <div
+                  key={up}
+                  className={`flex justify-between px-1 rounded ${
+                    data.activeUp === up ? 'bg-blue-900/60 text-blue-200 font-bold' : ''
+                  }`}
+                >
                   <span className="text-slate-400 truncate max-w-[85px]">{up}:</span>
                   <span className={Number(qty) > 0 ? 'text-emerald-400 font-semibold' : 'text-slate-600'}>
                     {Number(qty) > 0 ? Number(qty).toLocaleString() : '-'}
@@ -252,6 +446,32 @@ export const DashboardView: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Security Scope Banner for restricted users */}
+      {!isGlobalAccess && (
+        <div className="bg-gradient-to-r from-blue-500/10 via-indigo-500/5 to-transparent border border-blue-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-xs shrink-0">
+              <Lock className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider flex items-center gap-2">
+                <span>Información Filtrada por Permisos</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-200/80 text-blue-900">
+                  UP Autorizada: {availableUps.join(', ')}
+                </span>
+              </h4>
+              <p className="text-xs text-gray-600 mt-0.5">
+                Por tu perfil de acceso ({currentUser?.name}), estás visualizando exclusivamente las existencias, movimientos y alertas de tu sede asignada.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs font-semibold text-blue-800 bg-white px-3 py-1.5 rounded-xl border border-blue-100 shrink-0 self-start sm:self-auto shadow-2xs">
+            <Shield className="w-3.5 h-3.5 text-blue-600" />
+            <span>Acceso Exclusivo Sede</span>
+          </div>
+        </div>
+      )}
+
       {/* Top Header Card */}
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
         <div>
@@ -260,9 +480,16 @@ export const DashboardView: React.FC = () => {
             <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100">
               {inventario.length} Productos
             </span>
+            {selectedUp !== 'all' && (
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+                <MapPin className="w-3 h-3" /> UP: {selectedUp}
+              </span>
+            )}
           </div>
           <p className="text-sm text-gray-500 mt-1">
-            Monitoreo en tiempo real con nombres de productos, gráfica horizontal y control por subacopio
+            {isGlobalAccess
+              ? 'Monitoreo consolidado con filtro por subacopio (UP), reportes independientes y gráfica de existencias'
+              : `Monitoreo de existencias y niveles de reorden para la UP ${primaryUp}`}
           </p>
         </div>
 
@@ -282,33 +509,195 @@ export const DashboardView: React.FC = () => {
           </div>
 
           <button
+            type="button"
+            onClick={() => setIsReportModalOpen(true)}
+            className="px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition active:scale-95 shadow-2xs"
+            title="Generar y exportar reportes independientes por UP"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-blue-600" />
+            <span>Reportes por UP</span>
+          </button>
+
+          <button
             onClick={handleExportCSV}
             className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-sm shadow-emerald-600/20 flex items-center justify-center gap-2 transition active:scale-95"
+            title={selectedUp === 'all' && isGlobalAccess ? 'Exportar CSV consolidado' : `Exportar CSV de ${selectedUp === 'all' ? primaryUp : selectedUp}`}
           >
-            <FileSpreadsheet className="w-4 h-4" />
+            <Download className="w-4 h-4" />
             <span>Exportar CSV</span>
+          </button>
+        </div>
+      </div>
+
+      {/* UP Selection and Subacopio Filter Bar */}
+      <div className="bg-white border border-gray-150 rounded-2xl shadow-sm p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex items-center gap-2 text-gray-900 font-bold text-sm shrink-0">
+            <div className="p-1.5 bg-blue-100/70 text-blue-700 rounded-lg">
+              <MapPin className="w-4 h-4" />
+            </div>
+            <span>{isGlobalAccess ? 'Filtrar por UP (Subacopio):' : 'Sede Asignada:'}</span>
+          </div>
+
+          {/* Quick UP Pills */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {isGlobalAccess && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedUp('all');
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border ${
+                  selectedUp === 'all'
+                    ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                    : 'bg-slate-50 text-gray-700 border-gray-200 hover:bg-slate-100'
+                }`}
+              >
+                <span>Todas las UPs</span>
+                {selectedUp === 'all' && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+              </button>
+            )}
+
+            {availableUps.map(up => {
+              const isSelected = selectedUp === up || (!isGlobalAccess && availableUps.length === 1);
+              const countWithStock = inventario.filter(i => (i.upStock[up] || 0) > 0).length;
+
+              return (
+                <button
+                  key={up}
+                  type="button"
+                  onClick={() => {
+                    setSelectedUp(up);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border ${
+                    isSelected
+                      ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                      : 'bg-slate-50 text-gray-700 border-gray-200 hover:bg-slate-100'
+                  }`}
+                >
+                  {!isGlobalAccess && <Lock className="w-3 h-3 text-blue-200" />}
+                  <span>{up}</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-semibold ${
+                      isSelected ? 'bg-blue-700/80 text-blue-100' : 'bg-gray-200/80 text-gray-600'
+                    }`}
+                  >
+                    {countWithStock}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right Options: Solo con inventario toggle & Reports */}
+        <div className="flex flex-wrap items-center gap-3 pt-2 lg:pt-0 border-t lg:border-t-0 border-gray-100">
+          <button
+            type="button"
+            onClick={() => {
+              setOnlyWithStock(!onlyWithStock);
+              setCurrentPage(1);
+            }}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition border cursor-pointer select-none shadow-2xs ${
+              onlyWithStock
+                ? 'bg-emerald-600 text-white border-emerald-700 ring-2 ring-emerald-500/20 shadow-xs'
+                : 'bg-emerald-50/70 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+            }`}
+            title="Mostrar únicamente productos que tienen existencias disponibles (> 0)"
+          >
+            <PackageCheck className={`w-4 h-4 ${onlyWithStock ? 'text-white' : 'text-emerald-700'}`} />
+            <span>
+              {selectedUp === 'all'
+                ? 'Solo con inventario'
+                : `Solo con stock en ${selectedUp}`}
+            </span>
+            <span
+              className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                onlyWithStock ? 'bg-emerald-700 text-emerald-100' : 'bg-emerald-200/80 text-emerald-900'
+              }`}
+            >
+              {onlyWithStock ? `${currentTotalWithStock} activos` : `${currentTotalWithStock}`}
+            </span>
+          </button>
+
+          {isGlobalAccess && selectedUp !== 'all' && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedUp('all');
+                setCurrentPage(1);
+              }}
+              className="text-xs text-gray-500 hover:text-rose-600 font-semibold flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-rose-50 transition"
+              title="Quitar filtro de UP"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Ver Todas</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsReportModalOpen(true)}
+            className="px-3.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition ml-auto shadow-2xs"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-blue-700" />
+            <span>Reportes Avanzados</span>
           </button>
         </div>
       </div>
 
       {/* 4 Summary Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
+        <div
+          onClick={() => {
+            setOnlyWithStock(!onlyWithStock);
+            setCurrentPage(1);
+          }}
+          className={`cursor-pointer p-5 rounded-2xl border transition shadow-sm flex items-center justify-between ${
+            onlyWithStock
+              ? 'bg-emerald-50/80 border-emerald-300 ring-2 ring-emerald-500/20'
+              : 'bg-white border-gray-100 hover:border-gray-200'
+          }`}
+          title="Haz clic para alternar entre ver todo el catálogo o solo productos con existencias"
+        >
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Catálogo Total</p>
-            <p className="text-2xl font-black text-gray-900">{stats.totalItems}</p>
-            <span className="text-[11px] text-gray-400 font-medium">Productos registrados</span>
+            <div className="flex items-center gap-1.5 mb-1">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                {dashboardStats.isUpFiltered
+                  ? `Productos en ${dashboardStats.upName}`
+                  : onlyWithStock
+                  ? 'Con Inventario Activo'
+                  : 'Catálogo Total'}
+              </p>
+              {onlyWithStock && (
+                <span className="text-[9px] uppercase font-bold px-1.5 py-0.2 rounded-full bg-emerald-600 text-white">
+                  Filtrado
+                </span>
+              )}
+            </div>
+            <p className="text-2xl font-black text-gray-900">{dashboardStats.totalItems}</p>
+            <span className="text-[11px] text-gray-500 font-medium">
+              {onlyWithStock
+                ? `${dashboardStats.withStockCount} de ${dashboardStats.catalogTotal} con stock (Click para ver todos)`
+                : `${dashboardStats.withStockCount} de ${dashboardStats.catalogTotal} con existencias > 0`}
+            </span>
           </div>
-          <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
-            <Package className="w-6 h-6" />
+          <div className={`p-3 rounded-2xl ${onlyWithStock ? 'bg-emerald-600 text-white shadow-xs' : 'bg-blue-50 text-blue-600'}`}>
+            <PackageCheck className="w-6 h-6" />
           </div>
         </div>
 
         <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Entradas</p>
-            <p className="text-2xl font-black text-gray-900">{stats.totalEntradas}</p>
-            <span className="text-[11px] text-emerald-600 font-semibold">Recepciones registradas</span>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+              {dashboardStats.isUpFiltered ? `Entradas en ${dashboardStats.upName}` : 'Entradas'}
+            </p>
+            <p className="text-2xl font-black text-gray-900">{dashboardStats.totalEntradas}</p>
+            <span className="text-[11px] text-emerald-600 font-semibold">
+              {dashboardStats.isUpFiltered ? 'Recepciones en esta UP' : 'Recepciones registradas'}
+            </span>
           </div>
           <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
             <ArrowDownLeft className="w-6 h-6" />
@@ -317,9 +706,13 @@ export const DashboardView: React.FC = () => {
 
         <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Salidas</p>
-            <p className="text-2xl font-black text-gray-900">{stats.totalSalidas}</p>
-            <span className="text-[11px] text-rose-600 font-semibold">Despachos totales</span>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+              {dashboardStats.isUpFiltered ? `Salidas en ${dashboardStats.upName}` : 'Salidas'}
+            </p>
+            <p className="text-2xl font-black text-gray-900">{dashboardStats.totalSalidas}</p>
+            <span className="text-[11px] text-rose-600 font-semibold">
+              {dashboardStats.isUpFiltered ? 'Despachos en esta UP' : 'Despachos totales'}
+            </span>
           </div>
           <div className="p-3 bg-rose-50 text-rose-600 rounded-2xl">
             <ArrowUpRight className="w-6 h-6" />
@@ -334,20 +727,24 @@ export const DashboardView: React.FC = () => {
           className={`cursor-pointer p-5 rounded-2xl border transition shadow-sm flex items-center justify-between ${
             filterAlertsOnly
               ? 'bg-rose-600 text-white border-rose-700 shadow-rose-500/25'
-              : stats.alertas > 0
+              : dashboardStats.alertas > 0
               ? 'bg-rose-50/70 border-rose-200 hover:bg-rose-100/70'
               : 'bg-white border-gray-100'
           }`}
         >
           <div>
             <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${filterAlertsOnly ? 'text-white/80' : 'text-rose-600'}`}>
-              Alertas Reorden
+              {dashboardStats.isUpFiltered ? `Alertas en ${dashboardStats.upName}` : 'Alertas Reorden'}
             </p>
             <p className={`text-2xl font-black ${filterAlertsOnly ? 'text-white' : 'text-rose-700'}`}>
-              {stats.alertas}
+              {dashboardStats.alertas}
             </p>
             <span className={`text-[11px] font-medium flex items-center gap-1 ${filterAlertsOnly ? 'text-white/90 font-bold' : 'text-rose-600'}`}>
-              {filterAlertsOnly ? 'Filtro activo (Click para ver todos)' : 'Click para filtrar alertas'}
+              {filterAlertsOnly
+                ? 'Filtro activo (Click para ver todos)'
+                : dashboardStats.isUpFiltered
+                ? 'Stock <= reorden en UP'
+                : 'Click para filtrar alertas'}
             </span>
           </div>
           <div className={`p-3 rounded-2xl ${filterAlertsOnly ? 'bg-white/20 text-white' : 'bg-white text-rose-500 shadow-sm'}`}>
@@ -367,10 +764,13 @@ export const DashboardView: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900 tracking-tight flex items-center gap-2">
-                  Gráfica Horizontal: Nombres de Productos vs. Existencias
+                  Gráfica Horizontal:{' '}
+                  {selectedUp === 'all' ? 'Existencias Consolidadas' : `Existencias en UP: ${selectedUp}`} vs. Reorden
                 </h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Visualización horizontal por nombres de productos. Puntos rojos señalan existencias en o por debajo del reorden mínimo.
+                  {selectedUp === 'all'
+                    ? 'Visualización horizontal de stock global. Puntos rojos señalan existencias por debajo del reorden mínimo.'
+                    : `Visualizando existencias particulares de ${selectedUp}. Puntos rojos indican stock crítico o reorden para esta ubicación.`}
                 </p>
               </div>
             </div>
@@ -430,6 +830,22 @@ export const DashboardView: React.FC = () => {
                 </select>
               </div>
             )}
+
+            {/* Quick toggle in chart: Solo con inventario */}
+            <button
+              type="button"
+              onClick={() => setOnlyWithStock(!onlyWithStock)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition border cursor-pointer ${
+                onlyWithStock
+                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+              title="Filtrar gráfica solo a productos con existencias disponibles (> 0)"
+            >
+              <PackageCheck className={`w-3.5 h-3.5 ${onlyWithStock ? 'text-white' : 'text-emerald-600'}`} />
+              <span>Solo con inventario</span>
+              {onlyWithStock && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+            </button>
           </div>
 
           {/* Right Controls: Chart Type Toggle */}
@@ -466,7 +882,8 @@ export const DashboardView: React.FC = () => {
         {/* Counter Summary */}
         <div className="flex items-center justify-between text-xs text-gray-500 px-1">
           <span>
-            Mostrando <strong>{chartData.length}</strong> productos ordenados horizontalmente por nombre
+            Mostrando <strong>{chartData.length}</strong> productos ordenados horizontalmente
+            {selectedUp !== 'all' ? ` (Filtrando por UP: ${selectedUp})` : ''}
             {chartAreaFilter !== 'all' ? ` (Área: ${chartAreaFilter})` : ''}
           </span>
           <span className="text-[11px] text-gray-400">
@@ -529,7 +946,7 @@ export const DashboardView: React.FC = () => {
                       {/* Stock Actual Point (Circle) - Red if alert, Blue if normal */}
                       <Scatter
                         dataKey="stock"
-                        name="Stock Actual"
+                        name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
                         shape="circle"
                       >
                         {chartData.map((entry, index) => (
@@ -563,7 +980,11 @@ export const DashboardView: React.FC = () => {
                   ) : (
                     <>
                       {/* Comparative Bars */}
-                      <Bar dataKey="stock" name="Stock Actual" radius={[4, 4, 0, 0]}>
+                      <Bar
+                        dataKey="stock"
+                        name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
+                        radius={[4, 4, 0, 0]}
+                      >
                         {chartData.map((entry, index) => (
                           <Cell
                             key={`cell-bar-${index}`}
@@ -596,13 +1017,38 @@ export const DashboardView: React.FC = () => {
       <div className="bg-white border border-gray-100 rounded-2xl shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50/40">
           <div>
-            <h4 className="font-bold text-gray-900 text-base">Detalle de Inventario por Ubicación (UP)</h4>
+            <div className="flex items-center gap-2">
+              <h4 className="font-bold text-gray-900 text-base">Detalle de Inventario por Ubicación (UP)</h4>
+              {selectedUp !== 'all' && (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                  Columna {selectedUp} Destacada
+                </span>
+              )}
+            </div>
             <p className="text-xs text-gray-500">Desglose exacto de existencias en cada subacopio</p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Quick filter in table */}
+            <button
+              type="button"
+              onClick={() => {
+                setOnlyWithStock(!onlyWithStock);
+                setCurrentPage(1);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition border cursor-pointer ${
+                onlyWithStock
+                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+              title="Filtrar tabla para mostrar únicamente productos con stock > 0"
+            >
+              <PackageCheck className={`w-3.5 h-3.5 ${onlyWithStock ? 'text-white' : 'text-emerald-600'}`} />
+              <span>{onlyWithStock ? 'Filtrado: Con Inventario' : 'Solo con inventario'}</span>
+            </button>
+
             <div className="flex items-center gap-1.5 text-xs text-gray-500">
-              <span>Filas por página:</span>
+              <span>Filas:</span>
               <select
                 value={pageSize}
                 onChange={e => {
@@ -618,7 +1064,10 @@ export const DashboardView: React.FC = () => {
             </div>
 
             <span className="text-xs font-semibold bg-gray-100 text-gray-700 px-3 py-1 rounded-full whitespace-nowrap">
-              {filtered.length} productos {filterAlertsOnly ? '(alertas)' : ''}
+              {filtered.length} productos
+              {onlyWithStock ? ' (con stock)' : ''}
+              {filterAlertsOnly ? ' (alertas)' : ''}
+              {selectedUp !== 'all' ? ` (${selectedUp})` : ''}
             </span>
           </div>
         </div>
@@ -630,18 +1079,64 @@ export const DashboardView: React.FC = () => {
                 <th className="px-5 py-3.5 min-w-[220px]">Producto</th>
                 <th className="px-4 py-3.5">Área</th>
                 <th className="px-4 py-3.5 text-center bg-amber-50/40 text-amber-800">Reorden</th>
-                <th className="px-4 py-3.5 text-center bg-blue-50/50 text-blue-800 font-bold">Stock Total</th>
-                {INITIAL_UPS.map(up => (
-                  <th key={up} className="px-4 py-3.5 text-center whitespace-nowrap">
-                    {up}
-                  </th>
-                ))}
+                {isGlobalAccess ? (
+                  <>
+                    <th className="px-4 py-3.5 text-center bg-blue-50/50 text-blue-800 font-bold">Stock Total</th>
+                    {availableUps.map(up => {
+                      const isCurrentUp = selectedUp === up;
+                      return (
+                        <th
+                          key={up}
+                          className={`px-4 py-3.5 text-center whitespace-nowrap transition ${
+                            isCurrentUp ? 'bg-blue-600 text-white font-black shadow-xs' : ''
+                          }`}
+                        >
+                          <div className="flex items-center justify-center gap-1">
+                            {isCurrentUp && <MapPin className="w-3 h-3 text-white" />}
+                            <span>{up}</span>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </>
+                ) : availableUps.length === 1 ? (
+                  <>
+                    <th className="px-4 py-3.5 text-center bg-blue-600 text-white font-black shadow-xs">
+                      <div className="flex items-center justify-center gap-1">
+                        <MapPin className="w-3.5 h-3.5" />
+                        <span>Stock en {availableUps[0]}</span>
+                      </div>
+                    </th>
+                    <th className="px-4 py-3.5 text-center">Estado de Stock</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="px-4 py-3.5 text-center bg-blue-50/50 text-blue-800 font-bold">Stock Mis Sedes</th>
+                    {availableUps.map(up => (
+                      <th
+                        key={up}
+                        className={`px-4 py-3.5 text-center whitespace-nowrap transition ${
+                          selectedUp === up ? 'bg-blue-600 text-white font-black shadow-xs' : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-center gap-1">
+                          <MapPin className="w-3 h-3 text-white" />
+                          <span>{up}</span>
+                        </div>
+                      </th>
+                    ))}
+                  </>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {pageItems.length > 0 ? (
                 pageItems.map(item => {
-                  const isAlert = item.stockTotal <= (item.reorden || 0);
+                  const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
+                  const currentStock = (effectiveUp === 'all' && isGlobalAccess)
+                    ? item.stockTotal
+                    : (item.upStock[effectiveUp] || 0);
+                  const isAlert = currentStock <= (item.reorden || 0);
 
                   return (
                     <tr
@@ -655,7 +1150,11 @@ export const DashboardView: React.FC = () => {
                           {isAlert && (
                             <span
                               className="text-rose-500 shrink-0"
-                              title="Stock en nivel crítico (menor o igual a reorden)"
+                              title={
+                                effectiveUp === 'all'
+                                  ? 'Stock consolidado en o por debajo del reorden'
+                                  : `Stock en ${effectiveUp} en o por debajo del reorden`
+                              }
                             >
                               <AlertTriangle className="w-4 h-4 fill-rose-100" />
                             </span>
@@ -677,36 +1176,106 @@ export const DashboardView: React.FC = () => {
                         {item.reorden || 0}
                       </td>
 
-                      <td
-                        className={`px-4 py-3.5 text-center text-base font-black border-x border-gray-100 ${
-                          isAlert ? 'text-rose-600 bg-rose-50/40' : 'text-blue-600 bg-blue-50/20'
-                        }`}
-                      >
-                        {item.stockTotal.toLocaleString()}
-                      </td>
-
-                      {INITIAL_UPS.map(up => {
-                        const qty = item.upStock[up] || 0;
-                        let textClass = 'text-gray-300 font-normal';
-                        if (qty > 0) textClass = 'text-emerald-700 font-bold';
-                        else if (qty < 0) textClass = 'text-rose-600 font-bold';
-
-                        return (
-                          <td key={up} className={`px-4 py-3.5 text-center ${textClass}`}>
-                            {qty === 0 ? '-' : qty.toLocaleString()}
+                      {isGlobalAccess ? (
+                        <>
+                          <td
+                            className={`px-4 py-3.5 text-center text-base font-black border-x border-gray-100 ${
+                              item.stockTotal <= (item.reorden || 0)
+                                ? 'text-rose-600 bg-rose-50/40'
+                                : 'text-blue-600 bg-blue-50/20'
+                            }`}
+                          >
+                            {item.stockTotal.toLocaleString()}
                           </td>
-                        );
-                      })}
+
+                          {availableUps.map(up => {
+                            const qty = item.upStock[up] || 0;
+                            const isCurrentUp = selectedUp === up;
+                            let textClass = 'text-gray-300 font-normal';
+                            if (qty > 0) textClass = isCurrentUp ? 'text-blue-900 font-black' : 'text-emerald-700 font-bold';
+                            else if (qty < 0) textClass = 'text-rose-600 font-bold';
+
+                            return (
+                              <td
+                                key={up}
+                                className={`px-4 py-3.5 text-center transition ${
+                                  isCurrentUp ? 'bg-blue-100/60 border-x-2 border-blue-400 font-bold' : ''
+                                } ${textClass}`}
+                              >
+                                {qty === 0 ? '-' : qty.toLocaleString()}
+                              </td>
+                            );
+                          })}
+                        </>
+                      ) : availableUps.length === 1 ? (
+                        <>
+                          <td
+                            className={`px-4 py-3.5 text-center text-base font-black border-x border-gray-100 ${
+                              isAlert ? 'text-rose-600 bg-rose-50/50' : 'text-blue-700 bg-blue-50/30'
+                            }`}
+                          >
+                            {(item.upStock[availableUps[0]] || 0).toLocaleString()}
+                          </td>
+                          <td className="px-4 py-3.5 text-center">
+                            {isAlert ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                <AlertTriangle className="w-3 h-3" /> Reorden Crítico
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                <CheckCircle2 className="w-3 h-3" /> Óptimo
+                              </span>
+                            )}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td
+                            className="px-4 py-3.5 text-center text-base font-black border-x border-gray-100 text-blue-700 bg-blue-50/30"
+                          >
+                            {availableUps.reduce((sum, u) => sum + (item.upStock[u] || 0), 0).toLocaleString()}
+                          </td>
+                          {availableUps.map(up => {
+                            const qty = item.upStock[up] || 0;
+                            return (
+                              <td
+                                key={up}
+                                className={`px-4 py-3.5 text-center font-bold ${
+                                  qty > 0 ? 'text-gray-900' : 'text-gray-300'
+                                }`}
+                              >
+                                {qty === 0 ? '-' : qty.toLocaleString()}
+                              </td>
+                            );
+                          })}
+                        </>
+                      )}
                     </tr>
                   );
                 })
               ) : (
                 <tr>
                   <td
-                    colSpan={4 + INITIAL_UPS.length}
-                    className="p-10 text-center text-gray-400 text-sm"
+                    colSpan={isGlobalAccess ? 4 + availableUps.length : availableUps.length === 1 ? 5 : 4 + availableUps.length}
+                    className="p-10 text-center text-gray-500 text-sm"
                   >
-                    No se encontraron productos que coincidan con la búsqueda.
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Package className="w-8 h-8 text-gray-300" />
+                      <span>
+                        No se encontraron productos que coincidan con los filtros
+                        {onlyWithStock ? ' (solo productos con inventario)' : ''}
+                        {selectedUp !== 'all' ? ` y la UP (${selectedUp}).` : '.'}
+                      </span>
+                      {onlyWithStock && (
+                        <button
+                          type="button"
+                          onClick={() => setOnlyWithStock(false)}
+                          className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline mt-1"
+                        >
+                          Mostrar todos los productos del catálogo
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               )}
@@ -743,6 +1312,14 @@ export const DashboardView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Advanced Reports by Independent UP Modal */}
+      <ReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        defaultUp={selectedUp}
+        defaultReportType="inventario"
+      />
     </div>
   );
 };

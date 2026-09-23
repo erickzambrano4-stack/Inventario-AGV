@@ -7,9 +7,14 @@ import {
   InventarioItem,
   INITIAL_UPS,
   ToastMessage,
-  ActiveTab
+  ActiveTab,
+  Role,
+  ResponsableAlmacen,
+  INITIAL_RESPONSABLES,
+  SolicitudInsumo,
+  EstadoSolicitud
 } from '../types';
-import { db, testFirestoreConnection } from '../lib/firebase';
+import { db, testFirestoreConnection, firebaseConfig, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   collection,
   doc,
@@ -31,12 +36,17 @@ const DEFAULT_ITEMS: Item[] = [
 const isDemoItem = (id: string) => /^(AGR|EMP|SEG|FER|LIM|OF)-\d+$/.test(id);
 
 const DEFAULT_USERS_RAW = [
-  { username: 'admin', password: 'admin123', name: 'Administrador Principal', role: 'admin' as const, up: 'ALL' },
-  { username: 'operador1', password: '123456', name: 'Operador de Almacén', role: 'operador' as const, up: 'LUPITA' }
+  { username: 'admin', password: 'admin123', name: 'Administrador Principal', role: 'admin' as const, up: 'ALL', allowedUps: ['ALL'] },
+  { username: 'supervisor1', password: '123456', name: 'Supervisor de Sede', role: 'supervisor' as const, up: 'LUPITA', allowedUps: ['LUPITA'] },
+  { username: 'operador1', password: '123456', name: 'Supervisor de Almacén', role: 'supervisor' as const, up: 'LUPITA', allowedUps: ['LUPITA'] }
 ];
 
 interface InventoryContextType {
   currentUser: Usuario | null;
+  userAllowedUps: string[];
+  isGlobalAccess: boolean;
+  primaryUp: string;
+  isUpAuthorized: (upName: string) => boolean;
   items: Item[];
   transacciones: Transaccion[];
   usuarios: Usuario[];
@@ -62,11 +72,37 @@ interface InventoryContextType {
   updateItem: (id: string, updates: Partial<Omit<Item, 'id'>>) => Promise<boolean>;
   deleteItem: (id: string) => Promise<boolean>;
   deleteMultipleItems: (ids: string[]) => Promise<{ deleted: number; skipped: number; skippedIds: string[] }>;
+  bulkImportMasterData: (payload: {
+    itemsToImport: Omit<Item, 'unidad'>[];
+    initialTransactions?: Array<{ itemId: string; qty: number; up: string; fecha?: string; notas?: string }>;
+    overwriteExisting: boolean;
+  }) => Promise<{ created: number; updated: number; transactionsCreated: number }>;
   addTransaction: (trans: Omit<Transaccion, 'idDoc' | 'timestamp' | 'usuario'>) => Promise<boolean>;
   deleteTransaction: (idDoc: string) => Promise<boolean>;
   deleteMultipleTransactions: (idDocs: string[]) => Promise<boolean>;
-  addUser: (user: Omit<Usuario, 'password'> & { password: string }) => Promise<boolean>;
+  addUser: (user: Omit<Usuario, 'password'> & { password: string; allowedUps?: string[] }) => Promise<boolean>;
+  updateUser: (username: string, updates: { role?: Role; up?: string; allowedUps?: string[]; name?: string; newPassword?: string }) => Promise<boolean>;
   deleteUser: (username: string) => Promise<boolean>;
+  ups: string[];
+  addUp: (newUp: string) => Promise<boolean>;
+  deleteUp: (upName: string) => Promise<boolean>;
+  responsables: ResponsableAlmacen[];
+  addResponsable: (data: Omit<ResponsableAlmacen, 'id' | 'fechaCreacion'>) => Promise<boolean>;
+  updateResponsable: (id: string, updates: Partial<ResponsableAlmacen>) => Promise<boolean>;
+  deleteResponsable: (id: string) => Promise<boolean>;
+  solicitudes: SolicitudInsumo[];
+  addSolicitud: (
+    data: Omit<SolicitudInsumo, 'id' | 'folio' | 'fechaCreacion'>,
+    afectarInventario?: boolean,
+    tipoMovimiento?: 'salida' | 'entrada'
+  ) => Promise<SolicitudInsumo | null>;
+  updateSolicitudEstado: (
+    id: string,
+    nuevoEstado: EstadoSolicitud,
+    afectarInventario?: boolean,
+    tipoMovimiento?: 'salida' | 'entrada'
+  ) => Promise<boolean>;
+  deleteSolicitud: (id: string) => Promise<boolean>;
   updateSettings: (newSettings: AppSettings) => Promise<void>;
   forceCloudSync: () => Promise<void>;
 }
@@ -76,7 +112,16 @@ const InventoryContext = createContext<InventoryContextType | undefined>(undefin
 export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<Usuario | null>(() => {
     const saved = localStorage.getItem('inv_current_user');
-    return saved ? JSON.parse(saved) : null;
+    if (!saved) return null;
+    try {
+      const parsed = JSON.parse(saved);
+      if (parsed && (parsed.role as string) === 'operador') {
+        parsed.role = 'supervisor';
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
   });
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
@@ -119,7 +164,111 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [usuarios, setUsuarios] = useState<Usuario[]>(() => {
     const saved = localStorage.getItem('invUsers_Pro');
-    return saved ? JSON.parse(saved) : [];
+    if (saved) {
+      try {
+        const parsed: Usuario[] = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map(u => ({
+            ...u,
+            role: (u.role as string) === 'operador' ? 'supervisor' : u.role
+          }));
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    return [];
+  });
+
+  const [ups, setUps] = useState<string[]>(() => {
+    const saved = localStorage.getItem('invUps_Pro');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const combined = Array.from(
+            new Set([...INITIAL_UPS, ...parsed.map((u: string) => String(u).trim().toUpperCase())])
+          );
+          return combined;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    return [...INITIAL_UPS];
+  });
+
+  // Calculate permissions and UP scope for the logged-in user
+  const isGlobalAccess = useMemo(() => {
+    if (!currentUser) return false;
+    if (currentUser.role === 'admin') return true;
+    if (currentUser.up === 'ALL') return true;
+    if (currentUser.allowedUps && currentUser.allowedUps.includes('ALL')) return true;
+    return false;
+  }, [currentUser]);
+
+  const userAllowedUps = useMemo(() => {
+    if (!currentUser) return ups;
+    if (isGlobalAccess) return ups;
+
+    if (currentUser.allowedUps && currentUser.allowedUps.length > 0) {
+      const explicit = currentUser.allowedUps
+        .map(u => u.trim().toUpperCase())
+        .filter(u => u && u !== 'ALL');
+      if (explicit.length > 0) return explicit;
+    }
+
+    if (currentUser.up && currentUser.up !== 'ALL') {
+      return [currentUser.up.trim().toUpperCase()];
+    }
+
+    return ups;
+  }, [currentUser, isGlobalAccess, ups]);
+
+  const primaryUp = useMemo(() => {
+    if (!currentUser) return ups[0] || 'LUPITA';
+    if (currentUser.up && currentUser.up !== 'ALL') return currentUser.up.toUpperCase();
+    if (userAllowedUps.length > 0) return userAllowedUps[0];
+    return ups[0] || 'LUPITA';
+  }, [currentUser, userAllowedUps, ups]);
+
+  const isUpAuthorized = useCallback(
+    (upName: string) => {
+      if (!upName) return false;
+      if (isGlobalAccess) return true;
+      return userAllowedUps.includes(upName.trim().toUpperCase());
+    },
+    [isGlobalAccess, userAllowedUps]
+  );
+
+  const [responsables, setResponsables] = useState<ResponsableAlmacen[]>(() => {
+    const saved = localStorage.getItem('invResponsables_Pro');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    return INITIAL_RESPONSABLES;
+  });
+
+  const [solicitudes, setSolicitudes] = useState<SolicitudInsumo[]>(() => {
+    const saved = localStorage.getItem('invSolicitudes_Pro');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    return [];
   });
 
   const [appSettings, setAppSettings] = useState<AppSettings>(() => {
@@ -162,6 +311,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [appSettings]);
 
   useEffect(() => {
+    localStorage.setItem('invUps_Pro', JSON.stringify(ups));
+  }, [ups]);
+
+  useEffect(() => {
+    localStorage.setItem('invResponsables_Pro', JSON.stringify(responsables));
+  }, [responsables]);
+
+  useEffect(() => {
+    localStorage.setItem('invSolicitudes_Pro', JSON.stringify(solicitudes));
+  }, [solicitudes]);
+
+  useEffect(() => {
     if (currentUser) {
       localStorage.setItem('inv_current_user', JSON.stringify(currentUser));
     } else {
@@ -181,7 +342,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             name: u.name,
             password: hashed,
             role: u.role,
-            up: u.up
+            up: u.up,
+            allowedUps: u.allowedUps
           });
         }
         setUsuarios(hashedUsers);
@@ -202,10 +364,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     let unsubTrans: (() => void) | null = null;
     let unsubUsers: (() => void) | null = null;
     let unsubConfig: (() => void) | null = null;
+    let unsubLocations: (() => void) | null = null;
+    let unsubSolicitudes: (() => void) | null = null;
+    let unsubResponsables: (() => void) | null = null;
 
     testFirestoreConnection().then(status => {
       setCloudConnected(status.connected);
-      setSyncStatusText(status.connected ? 'Conectado a Firebase: inventarios-subacopios' : status.message);
+      setSyncStatusText(status.connected ? `Conectado a Firebase: ${firebaseConfig.projectId}` : status.message);
     });
 
     try {
@@ -231,7 +396,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             });
           }
           setCloudConnected(true);
-          setSyncStatusText('Conectado a Firebase: inventarios-subacopios');
+          setSyncStatusText(`Conectado a Firebase: ${firebaseConfig.projectId}`);
         },
         error => {
           console.warn("Firestore items listener notice:", error.message);
@@ -289,6 +454,60 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           console.warn("Firestore config listener notice:", error.message);
         }
       );
+
+      // 5. Locations / UPs Listener
+      unsubLocations = onSnapshot(
+        doc(db, 'configuracion', 'locations'),
+        docSnap => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (Array.isArray(data?.ups) && data.ups.length > 0) {
+              setUps(prev => {
+                const combined = Array.from(
+                  new Set([...INITIAL_UPS, ...prev, ...data.ups.map((u: string) => String(u).trim().toUpperCase())])
+                );
+                return combined;
+              });
+            }
+          }
+        },
+        error => {
+          console.warn("Firestore locations listener notice:", error.message);
+        }
+      );
+
+      // 6. Solicitudes de Insumos Listener
+      unsubSolicitudes = onSnapshot(
+        collection(db, 'solicitudes'),
+        snapshot => {
+          const remoteDocs: SolicitudInsumo[] = [];
+          snapshot.forEach(docSnap => {
+            remoteDocs.push(docSnap.data() as SolicitudInsumo);
+          });
+          if (remoteDocs.length > 0) {
+            setSolicitudes(remoteDocs.sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0)));
+          }
+        },
+        error => {
+          console.warn("Firestore solicitudes listener notice:", error.message);
+        }
+      );
+
+      // 7. Responsables de Almacén Listener
+      unsubResponsables = onSnapshot(
+        doc(db, 'configuracion', 'responsables'),
+        docSnap => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (Array.isArray(data?.responsables) && data.responsables.length > 0) {
+              setResponsables(data.responsables);
+            }
+          }
+        },
+        error => {
+          console.warn("Firestore responsables listener notice:", error.message);
+        }
+      );
     } catch (err) {
       console.warn("Error setting up Firestore listeners:", err);
     }
@@ -298,6 +517,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (unsubTrans) unsubTrans();
       if (unsubUsers) unsubUsers();
       if (unsubConfig) unsubConfig();
+      if (unsubLocations) unsubLocations();
+      if (unsubSolicitudes) unsubSolicitudes();
+      if (unsubResponsables) unsubResponsables();
     };
   }, []);
 
@@ -317,8 +539,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       for (const trans of transacciones) {
         await setDoc(doc(db, 'transacciones', trans.idDoc), trans, { merge: true });
       }
-      // Sync settings
+      // Sync settings & locations
       await setDoc(doc(db, 'configuracion', 'general'), appSettings, { merge: true });
+      await setDoc(doc(db, 'configuracion', 'locations'), { ups }, { merge: true });
+      await setDoc(doc(db, 'configuracion', 'responsables'), { responsables }, { merge: true });
+      for (const sol of solicitudes) {
+        await setDoc(doc(db, 'solicitudes', sol.id), sol, { merge: true });
+      }
       setCloudConnected(true);
       setSyncStatusText('Conectado a Firebase: inventarios-subacopios');
       showToast('Sincronización completa con Firebase Cloud exitosa', 'success');
@@ -327,13 +554,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } finally {
       setIsSyncing(false);
     }
-  }, [items, transacciones, appSettings, showToast]);
+  }, [items, transacciones, appSettings, ups, responsables, solicitudes, showToast]);
 
   // Inventory calculation
   const inventario = useMemo<InventarioItem[]>(() => {
     return items.map(item => {
       const upStock: Record<string, number> = {};
-      INITIAL_UPS.forEach(up => {
+      ups.forEach(up => {
         upStock[up] = 0;
       });
 
@@ -403,7 +630,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       username: candidate.username,
       name: candidate.name,
       role: candidate.role,
-      up: candidate.up
+      up: candidate.up,
+      allowedUps: candidate.allowedUps
     };
 
     setCurrentUser(loggedUser);
@@ -541,10 +769,124 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { deleted: toDelete.length, skipped: skippedIds.length, skippedIds };
   };
 
+  // Bulk Import Master Data (Items & Initial Balances)
+  const bulkImportMasterData = async (payload: {
+    itemsToImport: Omit<Item, 'unidad'>[];
+    initialTransactions?: Array<{ itemId: string; qty: number; up: string; fecha?: string; notas?: string }>;
+    overwriteExisting: boolean;
+  }): Promise<{ created: number; updated: number; transactionsCreated: number }> => {
+    const { itemsToImport, initialTransactions = [], overwriteExisting } = payload;
+    if (itemsToImport.length === 0) {
+      return { created: 0, updated: 0, transactionsCreated: 0 };
+    }
+
+    const existingMap = new Map<string, Item>(items.map(i => [i.id, i]));
+    let createdCount = 0;
+    let updatedCount = 0;
+    const finalItemsToSave: Item[] = [];
+
+    itemsToImport.forEach(itemData => {
+      const cleanId = itemData.id.trim().toUpperCase();
+      const cleanDesc = itemData.desc.trim().toUpperCase();
+      const cleanArea = (itemData.area || 'GENERAL').trim().toUpperCase();
+      const cleanReorden = Math.max(0, itemData.reorden || 0);
+
+      const exists = existingMap.has(cleanId);
+      if (exists) {
+        if (overwriteExisting) {
+          const updatedItem: Item = {
+            id: cleanId,
+            desc: cleanDesc,
+            unidad: 'PZ',
+            area: cleanArea,
+            reorden: cleanReorden
+          };
+          existingMap.set(cleanId, updatedItem);
+          finalItemsToSave.push(updatedItem);
+          updatedCount++;
+        }
+      } else {
+        const newItem: Item = {
+          id: cleanId,
+          desc: cleanDesc,
+          unidad: 'PZ',
+          area: cleanArea,
+          reorden: cleanReorden
+        };
+        existingMap.set(cleanId, newItem);
+        finalItemsToSave.push(newItem);
+        createdCount++;
+      }
+    });
+
+    const newItemsArray = Array.from(existingMap.values());
+    setItems(newItemsArray);
+
+    // Initial stock transactions
+    const newTransactionsToSave: Transaccion[] = [];
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    if (initialTransactions.length > 0) {
+      initialTransactions.forEach(t => {
+        if (t.qty > 0) {
+          const idDoc = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
+          const newTrans: Transaccion = {
+            idDoc,
+            tipo: 'entrada',
+            itemId: t.itemId.trim().toUpperCase(),
+            qty: t.qty,
+            up: t.up || 'LUPITA',
+            fecha: t.fecha || todayStr,
+            notas: t.notas || 'Carga Inicial - Documento Maestro',
+            usuario: currentUser?.username || 'admin',
+            timestamp: Date.now()
+          };
+          newTransactionsToSave.push(newTrans);
+        }
+      });
+
+      if (newTransactionsToSave.length > 0) {
+        setTransacciones(prev => [...newTransactionsToSave, ...prev]);
+      }
+    }
+
+    // Save to Firestore if connected
+    if (db) {
+      try {
+        const itemWrites = finalItemsToSave.map(item =>
+          setDoc(doc(db, 'items', item.id), item, { merge: true })
+        );
+        const transWrites = newTransactionsToSave.map(trans =>
+          setDoc(doc(db, 'transacciones', trans.idDoc), trans)
+        );
+        await Promise.all([...itemWrites, ...transWrites]);
+      } catch (err: any) {
+        console.warn("Firestore bulk import write notice:", err.message);
+      }
+    }
+
+    showToast(
+      `Carga maestra completada: ${createdCount} creados, ${updatedCount} actualizados, ${newTransactionsToSave.length} movimientos de stock`,
+      'success'
+    );
+
+    return {
+      created: createdCount,
+      updated: updatedCount,
+      transactionsCreated: newTransactionsToSave.length
+    };
+  };
+
   // Add Transaction (Entrada or Salida)
   const addTransaction = async (trans: Omit<Transaccion, 'idDoc' | 'timestamp' | 'usuario'>): Promise<boolean> => {
     if (!currentUser) {
       showToast('Debes iniciar sesión para registrar movimientos', 'error');
+      return false;
+    }
+
+    const upClean = trans.up.trim().toUpperCase();
+    if (!isGlobalAccess && !isUpAuthorized(upClean)) {
+      showToast(`No tienes permisos para registrar movimientos en ${upClean}`, 'error');
       return false;
     }
 
@@ -561,6 +903,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const idDoc = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
     const newTrans: Transaccion = {
       ...trans,
+      up: upClean,
       idDoc,
       usuario: currentUser.username,
       timestamp: Date.now()
@@ -576,7 +919,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    showToast(`${trans.tipo === 'entrada' ? 'Recepción' : 'Despacho'} registrado con éxito`, 'success');
+    showToast(`${trans.tipo === 'entrada' ? 'Recepción' : 'Despacho'} registrado con éxito en ${upClean}`, 'success');
     return true;
   };
 
@@ -616,7 +959,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   // Add User
-  const addUser = async (userData: Omit<Usuario, 'password'> & { password: string }): Promise<boolean> => {
+  const addUser = async (userData: Omit<Usuario, 'password'> & { password: string; allowedUps?: string[] }): Promise<boolean> => {
     const username = userData.username.trim().toLowerCase();
     if (usuarios.some(u => u.username.toLowerCase() === username)) {
       showToast('El nombre de usuario ya existe', 'error');
@@ -629,7 +972,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       name: userData.name.trim(),
       password: hashedPassword,
       role: userData.role,
-      up: userData.up
+      up: userData.up,
+      allowedUps: userData.allowedUps && userData.allowedUps.length > 0 ? userData.allowedUps : (userData.up === 'ALL' ? ['ALL'] : [userData.up])
     };
 
     setUsuarios(prev => [...prev, newUser]);
@@ -643,6 +987,80 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     showToast(`Usuario ${newUser.username} creado exitosamente`, 'success');
+    return true;
+  };
+
+  // Update User permissions/data
+  const updateUser = async (
+    username: string,
+    updates: {
+      role?: Role;
+      up?: string;
+      allowedUps?: string[];
+      name?: string;
+      newPassword?: string;
+    }
+  ): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('No tienes permisos de administrador', 'error');
+      return false;
+    }
+
+    const targetUser = usuarios.find(u => u.username.toLowerCase() === username.toLowerCase());
+    if (!targetUser) {
+      showToast('Usuario no encontrado', 'error');
+      return false;
+    }
+
+    // Protection: do not leave system without any admin
+    if (updates.role && updates.role !== 'admin' && targetUser.role === 'admin') {
+      const adminCount = usuarios.filter(u => u.role === 'admin').length;
+      if (adminCount <= 1) {
+        showToast('No puedes remover los permisos de administrador al único administrador del sistema', 'error');
+        return false;
+      }
+    }
+
+    let hashedPassword = targetUser.password;
+    if (updates.newPassword && updates.newPassword.trim()) {
+      if (updates.newPassword.trim().length < 6) {
+        showToast('La contraseña debe tener al menos 6 caracteres', 'warning');
+        return false;
+      }
+      hashedPassword = await hashPassword(updates.newPassword.trim());
+    }
+
+    const nextRole = updates.role ?? targetUser.role;
+    const nextUp = nextRole === 'admin' ? (updates.up || 'ALL') : (updates.up ?? targetUser.up ?? 'LUPITA');
+    const nextName = updates.name ? updates.name.trim() : targetUser.name;
+    const nextAllowedUps = updates.allowedUps ?? (nextUp === 'ALL' ? ['ALL'] : (targetUser.allowedUps || [nextUp]));
+
+    const updatedUser: Usuario = {
+      ...targetUser,
+      name: nextName,
+      role: nextRole,
+      up: nextUp,
+      allowedUps: nextAllowedUps,
+      password: hashedPassword
+    };
+
+    setUsuarios(prev => prev.map(u => (u.username.toLowerCase() === username.toLowerCase() ? updatedUser : u)));
+
+    // Keep active session in sync if admin updated themselves
+    if (currentUser.username.toLowerCase() === username.toLowerCase()) {
+      setCurrentUser(updatedUser);
+      localStorage.setItem('inv_current_user', JSON.stringify(updatedUser));
+    }
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'usuarios', targetUser.username), updatedUser, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore update user notice:', err.message);
+      }
+    }
+
+    showToast(`Permisos del usuario "${targetUser.username}" actualizados`, 'success');
     return true;
   };
 
@@ -679,6 +1097,83 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return true;
   };
 
+  // Add a new UP (Subacopio / Location) - Admin Only
+  const addUp = async (newUpName: string): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los usuarios con rol de Administrador pueden agregar nuevas UPs', 'error');
+      return false;
+    }
+
+    const clean = newUpName.trim().toUpperCase();
+    if (!clean || clean.length < 2) {
+      showToast('El nombre de la UP debe tener al menos 2 caracteres', 'warning');
+      return false;
+    }
+
+    if (clean === 'ALL' || clean === 'TODAS' || clean === 'TODO') {
+      showToast('"ALL" es una palabra reservada del sistema', 'warning');
+      return false;
+    }
+
+    if (ups.some(u => u.toUpperCase() === clean)) {
+      showToast(`La UP "${clean}" ya existe en el sistema`, 'warning');
+      return false;
+    }
+
+    const updated = [...ups, clean];
+    setUps(updated);
+    localStorage.setItem('invUps_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'configuracion', 'locations'), { ups: updated }, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore add UP notice:', err.message);
+      }
+    }
+
+    showToast(`Unidad de Producción "${clean}" agregada exitosamente`, 'success');
+    return true;
+  };
+
+  // Delete an unused UP - Admin Only
+  const deleteUp = async (upNameToDelete: string): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los administradores pueden eliminar UPs', 'error');
+      return false;
+    }
+
+    const clean = upNameToDelete.trim().toUpperCase();
+
+    // Check if in use
+    const hasMovements = transacciones.some(t => t.up.toUpperCase() === clean);
+    if (hasMovements) {
+      showToast(`No se puede eliminar "${clean}": tiene movimientos registrados en el historial.`, 'error');
+      return false;
+    }
+
+    const hasUsers = usuarios.some(u => u.up.toUpperCase() === clean);
+    if (hasUsers) {
+      showToast(`No se puede eliminar "${clean}": hay usuarios asignados a esta sede.`, 'error');
+      return false;
+    }
+
+    const updated = ups.filter(u => u.toUpperCase() !== clean);
+    setUps(updated);
+    localStorage.setItem('invUps_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'configuracion', 'locations'), { ups: updated }, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore delete UP notice:', err.message);
+      }
+    }
+
+    showToast(`Unidad de Producción "${clean}" eliminada`, 'success');
+    return true;
+  };
+
   // Update App Settings
   const updateSettings = async (newSettings: AppSettings): Promise<void> => {
     setAppSettings(newSettings);
@@ -692,10 +1187,272 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Configuración del sistema guardada', 'success');
   };
 
+  // Add a new Responsable de Almacén - Admin Only
+  const addResponsable = async (data: Omit<ResponsableAlmacen, 'id' | 'fechaCreacion'>): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los administradores pueden registrar responsables de almacén', 'error');
+      return false;
+    }
+
+    const cleanNombre = data.nombre.trim();
+    if (!cleanNombre) {
+      showToast('El nombre del responsable de almacén es obligatorio', 'warning');
+      return false;
+    }
+
+    const newResp: ResponsableAlmacen = {
+      ...data,
+      id: 'resp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      nombre: cleanNombre,
+      cargo: data.cargo.trim() || 'Encargado de Almacén',
+      up: data.up.trim().toUpperCase(),
+      fechaCreacion: new Date().toISOString()
+    };
+
+    const updated = [...responsables, newResp];
+    setResponsables(updated);
+    localStorage.setItem('invResponsables_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore add responsable notice:', err.message);
+      }
+    }
+
+    showToast(`Responsable ${cleanNombre} asignado a UP ${newResp.up}`, 'success');
+    return true;
+  };
+
+  // Update Responsable de Almacén - Admin Only
+  const updateResponsable = async (id: string, updates: Partial<ResponsableAlmacen>): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los administradores pueden editar responsables', 'error');
+      return false;
+    }
+
+    const updated = responsables.map(r => r.id === id ? { ...r, ...updates } : r);
+    setResponsables(updated);
+    localStorage.setItem('invResponsables_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore update responsable notice:', err.message);
+      }
+    }
+
+    showToast('Responsable de almacén actualizado', 'success');
+    return true;
+  };
+
+  // Delete Responsable de Almacén - Admin Only
+  const deleteResponsable = async (id: string): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los administradores pueden eliminar responsables', 'error');
+      return false;
+    }
+
+    const target = responsables.find(r => r.id === id);
+    if (!target) return false;
+
+    // Check if responsible has issued documents
+    const inUse = solicitudes.some(
+      s => s.responsableAlmacen.toLowerCase().trim() === target.nombre.toLowerCase().trim()
+    );
+    if (inUse) {
+      showToast(
+        `No se puede eliminar a "${target.nombre}" porque figura como responsable en vales o solicitudes. Puedes marcarlo como "Inactivo".`,
+        'warning'
+      );
+      return false;
+    }
+
+    const updated = responsables.filter(r => r.id !== id);
+    setResponsables(updated);
+    localStorage.setItem('invResponsables_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore delete responsable notice:', err.message);
+      }
+    }
+
+    showToast(`Responsable ${target.nombre} eliminado`, 'success');
+    return true;
+  };
+
+  // Add Solicitud de Insumos (con ingreso automático al inventario)
+  const addSolicitud = async (
+    data: Omit<SolicitudInsumo, 'id' | 'folio' | 'fechaCreacion'>,
+    afectarInventario: boolean = true,
+    tipoMovimiento: 'salida' | 'entrada' = 'entrada'
+  ): Promise<SolicitudInsumo | null> => {
+    if (!currentUser) return null;
+
+    const upClean = (data.up || primaryUp).trim().toUpperCase();
+    if (!isGlobalAccess && !isUpAuthorized(upClean)) {
+      showToast(`No tienes permisos para emitir solicitudes en la UP ${upClean}`, 'error');
+      return null;
+    }
+
+    if (!data.items || data.items.length === 0) {
+      showToast('Debes agregar al menos un insumo a la solicitud', 'warning');
+      return null;
+    }
+
+    // Generate Folio (e.g. SOL-LUP-2026-0001)
+    const cleanUp = upClean.replace(/[^a-zA-Z0-9]/g, '').substring(0, 3).toUpperCase() || 'ALM';
+    const year = new Date().getFullYear();
+    const countForType = solicitudes.length + 1;
+    const folioNumber = String(countForType).padStart(4, '0');
+    const folio = `SOL-${cleanUp}-${year}-${folioNumber}`;
+
+    const newId = 'doc-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
+
+    // 1. Ensure all requested items exist in master catalog, otherwise create them
+    for (const line of data.items) {
+      const cleanItemId = line.itemId.trim().toUpperCase();
+      const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
+      if (!exists) {
+        await addItem({
+          id: cleanItemId,
+          desc: line.desc.trim(),
+          area: line.area || 'GENERAL',
+          reorden: 0
+        });
+      }
+    }
+
+    // 2. Automatically register 'entrada' movement for each item to increase UP stock
+    if (afectarInventario) {
+      for (const item of data.items) {
+        const cleanItemId = item.itemId.trim().toUpperCase();
+        await addTransaction({
+          tipo: tipoMovimiento,
+          itemId: cleanItemId,
+          qty: Number(item.cantidad) || 0,
+          up: upClean,
+          fecha: data.fecha || new Date().toISOString().split('T')[0],
+          notas: `Solicitud de Insumos ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`
+        });
+      }
+    }
+
+    const newSolicitud: SolicitudInsumo = {
+      ...data,
+      tipo: 'solicitud',
+      up: upClean,
+      id: newId,
+      folio,
+      usuarioCreador: currentUser.username,
+      fechaCreacion: Date.now(),
+      aplicadoInventario: afectarInventario,
+      estado: data.estado || 'aprobada'
+    };
+
+    const updated = [newSolicitud, ...solicitudes];
+    setSolicitudes(updated);
+    localStorage.setItem('invSolicitudes_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'solicitudes', newId), newSolicitud, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore add solicitud notice:', err.message);
+      }
+    }
+
+    showToast(`Solicitud ${folio} generada. Se agregaron los productos automáticamente al inventario de UP ${upClean}.`, 'success');
+
+    return newSolicitud;
+  };
+
+  // Update Solicitud Estado
+  const updateSolicitudEstado = async (
+    id: string,
+    nuevoEstado: EstadoSolicitud,
+    afectarInventario: boolean = false,
+    tipoMovimiento: 'salida' | 'entrada' = 'entrada'
+  ): Promise<boolean> => {
+    const target = solicitudes.find(s => s.id === id);
+    if (!target) return false;
+
+    const willApplyStock = afectarInventario && !target.aplicadoInventario && (nuevoEstado === 'entregada' || nuevoEstado === 'aprobada');
+
+    const updatedSolicitud: SolicitudInsumo = {
+      ...target,
+      estado: nuevoEstado,
+      fechaModificacion: Date.now(),
+      aplicadoInventario: target.aplicadoInventario || willApplyStock
+    };
+
+    const updated = solicitudes.map(s => s.id === id ? updatedSolicitud : s);
+    setSolicitudes(updated);
+    localStorage.setItem('invSolicitudes_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await setDoc(doc(db, 'solicitudes', id), updatedSolicitud, { merge: true });
+      } catch (err: any) {
+        console.warn('Firestore update solicitud notice:', err.message);
+      }
+    }
+
+    if (willApplyStock) {
+      for (const item of target.items) {
+        await addTransaction({
+          tipo: tipoMovimiento,
+          itemId: item.itemId,
+          qty: item.cantidad,
+          up: target.up,
+          fecha: new Date().toISOString().split('T')[0],
+          notas: `Solicitud de Insumos ${target.folio}: ${target.solicitante}`
+        });
+      }
+      showToast(`Estado actualizado a "${nuevoEstado.toUpperCase()}" y stock actualizado en UP ${target.up}`, 'success');
+    } else {
+      showToast(`Estado actualizado a "${nuevoEstado.toUpperCase()}"`, 'success');
+    }
+
+    return true;
+  };
+
+  // Delete Solicitud
+  const deleteSolicitud = async (id: string): Promise<boolean> => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast('Solo los administradores pueden eliminar comprobantes', 'error');
+      return false;
+    }
+
+    const updated = solicitudes.filter(s => s.id !== id);
+    setSolicitudes(updated);
+    localStorage.setItem('invSolicitudes_Pro', JSON.stringify(updated));
+
+    if (db) {
+      try {
+        await deleteDoc(doc(db, 'solicitudes', id));
+      } catch (err: any) {
+        console.warn('Firestore delete solicitud notice:', err.message);
+      }
+    }
+
+    showToast('Comprobante eliminado', 'success');
+    return true;
+  };
+
   return (
     <InventoryContext.Provider
       value={{
         currentUser,
+        userAllowedUps,
+        isGlobalAccess,
+        primaryUp,
+        isUpAuthorized,
         items,
         transacciones,
         usuarios,
@@ -716,11 +1473,24 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateItem,
         deleteItem,
         deleteMultipleItems,
+        bulkImportMasterData,
         addTransaction,
         deleteTransaction,
         deleteMultipleTransactions,
         addUser,
+        updateUser,
         deleteUser,
+        ups,
+        addUp,
+        deleteUp,
+        responsables,
+        addResponsable,
+        updateResponsable,
+        deleteResponsable,
+        solicitudes,
+        addSolicitud,
+        updateSolicitudEstado,
+        deleteSolicitud,
         updateSettings,
         forceCloudSync
       }}

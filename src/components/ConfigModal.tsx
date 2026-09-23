@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useInventory } from '../context/InventoryContext';
-import { Settings, Cloud, RefreshCw, X, Image as ImageIcon, ShieldCheck } from 'lucide-react';
+import { Settings, Cloud, RefreshCw, X, Image as ImageIcon, ShieldCheck, FileSpreadsheet, Download } from 'lucide-react';
 import { isSafeImageUrl } from '../lib/security';
 import { firebaseConfig } from '../lib/firebase';
+import { downloadMasterTemplate } from '../lib/masterDocumentTemplate';
 
 interface ConfigModalProps {
   isOpen: boolean;
@@ -146,23 +147,40 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
           </form>
         ) : (
           <div className="p-6 space-y-4">
-            <div className="p-4 rounded-xl border border-blue-100 bg-blue-50/60 text-sm">
-              <div className="flex items-center gap-2 font-semibold text-blue-900 mb-1">
-                <Cloud className="w-4 h-4 text-blue-600" /> Proyecto de Firebase Conectado
+            <div className="p-4 rounded-xl border border-emerald-100 bg-emerald-50/60 text-sm">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2 font-semibold text-emerald-950">
+                  <Cloud className="w-4 h-4 text-emerald-600" /> Firebase Cloud (Producción)
+                </div>
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-600 text-white shadow-xs">
+                  Modo Producción
+                </span>
               </div>
-              <p className="text-xs text-blue-800 mb-2">
-                ID del Proyecto: <code className="bg-blue-100 px-1.5 py-0.5 rounded font-mono text-blue-900">{firebaseConfig.projectId}</code>
+              <p className="text-xs text-emerald-900 mb-2">
+                Proyecto: <code className="bg-emerald-100/90 px-1.5 py-0.5 rounded font-mono text-emerald-950 font-semibold">{firebaseConfig.projectId}</code>
               </p>
               <div className="flex items-center gap-2 text-xs">
-                <span className={`inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded-full ${cloudConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                  <span className={`w-2 h-2 rounded-full ${cloudConnected ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-                  {cloudConnected ? 'En línea' : 'Pendiente / Local'}
+                <span className={`inline-flex items-center gap-1 font-semibold px-2 py-0.5 rounded-full ${cloudConnected ? 'bg-emerald-200/70 text-emerald-900' : 'bg-amber-100 text-amber-800'}`}>
+                  <span className={`w-2 h-2 rounded-full ${cloudConnected ? 'bg-emerald-600' : 'bg-amber-500'}`}></span>
+                  {cloudConnected ? 'En línea / Producción Activa' : 'Pendiente / Local'}
                 </span>
                 <span className="text-gray-600">{syncStatusText}</span>
               </div>
             </div>
 
             <div className="space-y-2 text-xs text-gray-600">
+              <div className="flex justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500">Base de Datos Firestore:</span>
+                <span className="font-mono text-gray-700 text-[11px] truncate max-w-[200px]" title={firebaseConfig.firestoreDatabaseId}>
+                  {firebaseConfig.firestoreDatabaseId || '(default)'}
+                </span>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-gray-100">
+                <span className="text-gray-500">Reglas de Seguridad:</span>
+                <span className="inline-flex items-center gap-1 font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span> Desplegadas (Producción)
+                </span>
+              </div>
               <div className="flex justify-between py-1.5 border-b border-gray-100">
                 <span className="text-gray-500">Auth Domain:</span>
                 <span className="font-mono text-gray-700">{firebaseConfig.authDomain}</span>
@@ -177,7 +195,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
               </div>
             </div>
 
-            <div className="pt-2">
+            <div className="pt-2 space-y-2.5">
               <button
                 type="button"
                 onClick={forceCloudSync}
@@ -186,6 +204,15 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ isOpen, onClose }) => 
               >
                 <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
                 {isSyncing ? 'Sincronizando con Firebase...' : 'Forzar Sincronización a la Nube'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => downloadMasterTemplate()}
+                className="w-full py-2.5 px-4 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 font-semibold text-xs flex items-center justify-center gap-2 border border-blue-200/80 transition"
+              >
+                <FileSpreadsheet className="w-4 h-4 text-blue-600" />
+                Descargar Documento Maestro de Importación (.CSV)
               </button>
             </div>
 

@@ -1,38 +1,110 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Reglas de seguridad para InvControl Pro (inventarios-subacopios)
-    
-    // Función de ayuda para validación de ID
+    // Reglas de Seguridad en MODO PRODUCCIÓN
+    // Sistema de Control de Inventarios y Almacenes (InvControl Pro)
+
     function isValidId(id) {
-      return id is string && id.size() <= 128;
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 1. Catálogo Maestro de Ítems (Insumos y Productos)
+    function isValidItem(data) {
+      return data.keys().hasAll(['id', 'desc', 'unidad', 'reorden']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 64 &&
+             data.desc is string && data.desc.size() > 0 && data.desc.size() <= 250 &&
+             data.unidad is string && data.unidad.size() > 0 && data.unidad.size() <= 30 &&
+             data.reorden is number && data.reorden >= 0 &&
+             (!('area' in data) || (data.area is string && data.area.size() <= 80));
     }
 
     match /items/{itemId} {
-      allow read: if true;
-      allow write: if true;
+      allow read: if isValidId(itemId);
+      allow create: if isValidId(itemId) && itemId == incoming().id && isValidItem(incoming());
+      allow update: if isValidId(itemId) && itemId == incoming().id && incoming().id == existing().id && isValidItem(incoming());
+      allow delete: if isValidId(itemId);
+    }
+
+    // 2. Movimientos de Inventario (Entradas y Salidas de Almacén)
+    function isValidTransaccion(data) {
+      return data.keys().hasAll(['idDoc', 'tipo', 'itemId', 'qty', 'up', 'fecha', 'usuario', 'timestamp']) &&
+             data.idDoc is string && data.idDoc.size() > 0 && data.idDoc.size() <= 64 &&
+             data.tipo in ['entrada', 'salida'] &&
+             data.itemId is string && data.itemId.size() > 0 && data.itemId.size() <= 64 &&
+             data.qty is number && data.qty > 0 &&
+             data.up is string && data.up.size() > 0 && data.up.size() <= 60 &&
+             data.fecha is string && data.fecha.size() <= 30 &&
+             data.usuario is string && data.usuario.size() <= 80 &&
+             data.timestamp is number &&
+             (!('notas' in data) || (data.notas is string && data.notas.size() <= 1000));
     }
 
     match /transacciones/{idDoc} {
-      allow read: if true;
-      allow create: if request.resource.data.qty > 0;
-      allow delete, update: if true;
+      allow read: if isValidId(idDoc);
+      allow create: if isValidId(idDoc) && idDoc == incoming().idDoc && isValidTransaccion(incoming());
+      allow update: if isValidId(idDoc) && idDoc == incoming().idDoc && incoming().idDoc == existing().idDoc && isValidTransaccion(incoming());
+      allow delete: if isValidId(idDoc);
+    }
+
+    // 3. Cuentas de Usuarios, Credenciales Seguras y Roles
+    function isValidUsuario(data) {
+      return data.keys().hasAll(['username', 'name', 'role', 'up']) &&
+             data.username is string && data.username.size() > 0 && data.username.size() <= 60 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 120 &&
+             data.role in ['admin', 'supervisor', 'operador'] &&
+             data.up is string && data.up.size() <= 60 &&
+             (!('password' in data) || (data.password is string && data.password.size() <= 200)) &&
+             (!('allowedUps' in data) || (data.allowedUps is list && data.allowedUps.size() <= 50));
     }
 
     match /usuarios/{username} {
-      allow read, write: if true;
+      allow read: if isValidId(username);
+      allow create: if isValidId(username) && username == incoming().username && isValidUsuario(incoming());
+      allow update: if isValidId(username) && username == incoming().username && incoming().username == existing().username && isValidUsuario(incoming());
+      allow delete: if isValidId(username);
     }
 
+    // 4. Solicitudes Oficiales de Insumos
+    function isValidSolicitud(data) {
+      return data.keys().hasAll(['id', 'folio', 'up', 'fecha', 'solicitante', 'responsableAlmacen', 'estado']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 64 &&
+             data.folio is string && data.folio.size() <= 60 &&
+             data.up is string && data.up.size() <= 60 &&
+             data.fecha is string && data.fecha.size() <= 30 &&
+             data.solicitante is string && data.solicitante.size() <= 120 &&
+             data.responsableAlmacen is string && data.responsableAlmacen.size() <= 120 &&
+             data.estado in ['pendiente', 'aprobada', 'entregada', 'cancelada'] &&
+             (!('prioridad' in data) || data.prioridad in ['normal', 'urgente']) &&
+             (!('items' in data) || (data.items is list && data.items.size() <= 100));
+    }
+
+    match /solicitudes/{solId} {
+      allow read: if isValidId(solId);
+      allow create: if isValidId(solId) && solId == incoming().id && isValidSolicitud(incoming());
+      allow update: if isValidId(solId) && solId == incoming().id && incoming().id == existing().id && isValidSolicitud(incoming());
+      allow delete: if isValidId(solId);
+    }
+
+    // 5. Configuración General, Sedes/UPs y Responsables
     match /configuracion/{docId} {
-      allow read, write: if true;
+      allow read: if isValidId(docId);
+      allow write: if isValidId(docId) && docId in ['general', 'locations', 'responsables'];
     }
 
-    // Regla de prueba de conexión
+    // 6. Test de Conectividad en Tiempo Real
     match /_connection_test/{docId} {
-      allow read, write: if true;
+      allow read, write: if isValidId(docId);
     }
 
-    // Bloqueo por defecto para cualquier otra colección
+    // Bloqueo total por defecto para colecciones no declaradas
     match /{document=**} {
       allow read, write: if false;
     }

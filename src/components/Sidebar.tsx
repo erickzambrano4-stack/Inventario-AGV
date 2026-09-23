@@ -13,7 +13,10 @@ import {
   Cloud,
   MapPin,
   Menu,
-  X
+  X,
+  BookOpen,
+  ClipboardList,
+  UserCheck
 } from 'lucide-react';
 import { ConfigModal } from './ConfigModal';
 
@@ -37,6 +40,8 @@ export const Sidebar: React.FC = () => {
 
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard, color: 'text-blue-400' },
+    { id: 'solicitudes' as const, label: 'Solicitudes Insumos', icon: ClipboardList, color: 'text-violet-400' },
+    { id: 'responsables' as const, label: 'Responsables UP', icon: UserCheck, color: 'text-teal-400' },
     { id: 'entrada' as const, label: 'Entradas', icon: ArrowDownLeft, color: 'text-emerald-400' },
     { id: 'salida' as const, label: 'Salidas', icon: ArrowUpRight, color: 'text-rose-400' },
     { id: 'historial' as const, label: 'Historial', icon: History, color: 'text-amber-400' }
@@ -44,7 +49,8 @@ export const Sidebar: React.FC = () => {
 
   const adminNavItems = [
     { id: 'items' as const, label: 'Base de Ítems', icon: Package, color: 'text-indigo-400' },
-    { id: 'usuarios' as const, label: 'Gestión Usuarios', icon: Users, color: 'text-amber-400' }
+    { id: 'usuarios' as const, label: 'Gestión Usuarios', icon: Users, color: 'text-amber-400' },
+    { id: 'manual' as const, label: 'Manual de Uso', icon: BookOpen, color: 'text-purple-400' }
   ];
 
   const handleNavClick = (tab: any) => {
@@ -101,8 +107,8 @@ export const Sidebar: React.FC = () => {
             <p className="text-xs text-slate-400 font-medium">Usuario activo</p>
             <p className="text-sm font-bold text-white">{currentUser.name}</p>
             <div className="flex items-center gap-2 mt-1">
-              <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${isAdmin ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-300'}`}>
-                {isAdmin ? 'Administrador' : 'Operador'}
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${isAdmin ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-600/30 text-blue-300 border border-blue-500/30'}`}>
+                {isAdmin ? 'Administrador' : 'Supervisor'}
               </span>
               <span className="text-[10px] text-slate-400 flex items-center gap-0.5">
                 <MapPin className="w-3 h-3 text-slate-500" /> UP: {currentUser.up}
@@ -208,10 +214,10 @@ export const Sidebar: React.FC = () => {
               <span className="text-xs font-semibold text-slate-200 truncate">{currentUser.name}</span>
               <span
                 className={`text-[9px] font-bold px-1.5 py-0.5 rounded tracking-wider uppercase ${
-                  isAdmin ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' : 'bg-slate-700 text-slate-300'
+                  isAdmin ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30' : 'bg-blue-600/30 text-blue-300 border border-blue-500/30'
                 }`}
               >
-                {isAdmin ? 'ADMIN' : 'OPERADOR'}
+                {isAdmin ? 'ADMIN' : 'SUPERVISOR'}
               </span>
             </div>
             <div className="mt-1 flex items-center text-[11px] text-slate-400">
@@ -290,9 +296,12 @@ export const Sidebar: React.FC = () => {
           >
             <div className="flex items-center gap-1.5 truncate">
               <Cloud className={`w-3.5 h-3.5 shrink-0 ${cloudConnected ? 'text-emerald-400' : 'text-amber-400'}`} />
-              <span className="truncate group-hover:text-slate-200">Firebase Cloud</span>
+              <span className="truncate group-hover:text-slate-200">Firebase (Producción)</span>
             </div>
-            <span className={`w-2 h-2 rounded-full shrink-0 ${cloudConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`}></span>
+            <div className="flex items-center gap-1">
+              <span className="text-[9px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-1 py-0.2 rounded border border-emerald-800/50">PROD</span>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${cloudConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`}></span>
+            </div>
           </div>
         </div>
 

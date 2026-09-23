@@ -5,8 +5,8 @@
       "description": "Producto o insumo en el catálogo de inventario",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "maxLength": 40 },
-        "desc": { "type": "string", "maxLength": 150 },
+        "id": { "type": "string", "maxLength": 50 },
+        "desc": { "type": "string", "maxLength": 200 },
         "unidad": { "type": "string", "maxLength": 20 },
         "area": { "type": "string", "maxLength": 60 },
         "reorden": { "type": "number" }
@@ -18,14 +18,14 @@
       "description": "Movimiento de recepción (entrada) o despacho (salida) de inventario",
       "type": "object",
       "properties": {
-        "idDoc": { "type": "string", "maxLength": 50 },
+        "idDoc": { "type": "string", "maxLength": 60 },
         "tipo": { "type": "string", "enum": ["entrada", "salida"] },
-        "itemId": { "type": "string", "maxLength": 40 },
+        "itemId": { "type": "string", "maxLength": 50 },
         "qty": { "type": "number" },
         "up": { "type": "string", "maxLength": 50 },
-        "fecha": { "type": "string", "maxLength": 10 },
-        "notas": { "type": "string", "maxLength": 300 },
-        "usuario": { "type": "string", "maxLength": 40 },
+        "fecha": { "type": "string", "maxLength": 20 },
+        "notas": { "type": "string", "maxLength": 500 },
+        "usuario": { "type": "string", "maxLength": 50 },
         "timestamp": { "type": "number" }
       },
       "required": ["idDoc", "tipo", "itemId", "qty", "up", "fecha", "usuario", "timestamp"]
@@ -35,23 +35,50 @@
       "description": "Perfil de usuario del sistema de inventario",
       "type": "object",
       "properties": {
-        "username": { "type": "string", "maxLength": 30 },
-        "password": { "type": "string", "maxLength": 100 },
-        "name": { "type": "string", "maxLength": 80 },
-        "role": { "type": "string", "enum": ["admin", "operador"] },
+        "username": { "type": "string", "maxLength": 40 },
+        "password": { "type": "string", "maxLength": 120 },
+        "name": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["admin", "supervisor", "operador"] },
         "up": { "type": "string", "maxLength": 50 }
       },
       "required": ["username", "name", "role", "up"]
     },
-    "Configuracion": {
-      "title": "Configuracion",
-      "description": "Ajustes de marca y apariencia",
+    "SolicitudInsumo": {
+      "title": "SolicitudInsumo",
+      "description": "Formato oficial de solicitud de insumos con ingreso a inventario",
       "type": "object",
       "properties": {
-        "appName": { "type": "string", "maxLength": 50 },
-        "logoUrl": { "type": "string", "maxLength": 300 }
+        "id": { "type": "string", "maxLength": 60 },
+        "folio": { "type": "string", "maxLength": 40 },
+        "tipo": { "type": "string", "maxLength": 30 },
+        "up": { "type": "string", "maxLength": 50 },
+        "fecha": { "type": "string", "maxLength": 20 },
+        "solicitante": { "type": "string", "maxLength": 100 },
+        "responsableAlmacen": { "type": "string", "maxLength": 100 },
+        "prioridad": { "type": "string", "enum": ["normal", "urgente"] },
+        "estado": { "type": "string", "enum": ["pendiente", "aprobada", "entregada", "cancelada"] },
+        "fechaCreacion": { "type": "number" }
       },
-      "required": ["appName"]
+      "required": ["id", "folio", "up", "fecha", "solicitante", "responsableAlmacen", "estado"]
+    },
+    "Configuracion": {
+      "title": "Configuracion",
+      "description": "Ajustes de marca, apariencia, sedes y custodios",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string", "maxLength": 100 },
+        "logoUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": []
+    },
+    "ConnectionTest": {
+      "title": "ConnectionTest",
+      "description": "Documento de prueba para validar conectividad con Firestore",
+      "type": "object",
+      "properties": {
+        "timestamp": { "type": "number" }
+      },
+      "required": []
     }
   },
   "firestore": {
@@ -61,15 +88,23 @@
     },
     "/transacciones/{idDoc}": {
       "schema": "Transaccion",
-      "description": "Movimientos de entrada y salida"
+      "description": "Movimientos de entrada y salida de inventario"
     },
     "/usuarios/{username}": {
       "schema": "Usuario",
       "description": "Cuentas de usuarios y roles"
     },
+    "/solicitudes/{solId}": {
+      "schema": "SolicitudInsumo",
+      "description": "Solicitudes de insumos emitidas por UP"
+    },
     "/configuracion/{docId}": {
       "schema": "Configuracion",
-      "description": "Configuración del sistema"
+      "description": "Configuración del sistema, sedes y custodios"
+    },
+    "/_connection_test/{docId}": {
+      "schema": "ConnectionTest",
+      "description": "Documento para prueba de latencia y disponibilidad de Firestore"
     }
   }
 }

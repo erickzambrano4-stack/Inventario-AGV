@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useInventory } from '../context/InventoryContext';
-import { INITIAL_UPS, Role } from '../types';
+import { Role, Usuario } from '../types';
 import {
   Users,
   UserPlus,
@@ -11,25 +11,78 @@ import {
   Shield,
   MapPin,
   Lock,
-  User
+  User,
+  Pencil,
+  Plus,
+  Building2,
+  Package,
+  Layers,
+  Sparkles,
+  AlertCircle,
+  UserCheck
 } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
+import { EditUserModal } from './EditUserModal';
 
 const PAGE_SIZE = 8;
 
 export const UsuariosView: React.FC = () => {
-  const { usuarios, currentUser, addUser, deleteUser, showToast } = useInventory();
+  const {
+    usuarios,
+    currentUser,
+    addUser,
+    updateUser,
+    deleteUser,
+    ups,
+    addUp,
+    deleteUp,
+    responsables,
+    transacciones,
+    inventario,
+    showToast,
+    setActiveTab
+  } = useInventory();
 
+  // New user form state
   const [newUsername, setNewUsername] = useState('');
   const [newName, setNewName] = useState('');
   const [newPass, setNewPass] = useState('');
-  const [newRole, setNewRole] = useState<Role>('operador');
-  const [newUp, setNewUp] = useState<string>('LUPITA');
+  const [newRole, setNewRole] = useState<Role>('supervisor');
+  const [newUp, setNewUp] = useState<string>(() => ups[0] || 'LUPITA');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // New UP form state
+  const [newUpName, setNewUpName] = useState('');
+  const [isAddingUp, setIsAddingUp] = useState(false);
+  const [deleteTargetUp, setDeleteTargetUp] = useState<string | null>(null);
+  const newUpInputRef = useRef<HTMLInputElement>(null);
 
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [deleteTargetUser, setDeleteTargetUser] = useState<string | null>(null);
+  const [editingUser, setEditingUser] = useState<Usuario | null>(null);
+
+  const totalAdminsCount = useMemo(() => usuarios.filter(u => u.role === 'admin').length, [usuarios]);
+
+  // Statistics per UP
+  const upStats = useMemo(() => {
+    return ups.map(upName => {
+      const usersInUp = usuarios.filter(u => u.up.toUpperCase() === upName.toUpperCase()).length;
+      const itemsWithStock = inventario.filter(i => (i.upStock[upName] || 0) > 0).length;
+      const movementsCount = transacciones.filter(t => t.up.toUpperCase() === upName.toUpperCase()).length;
+      const responsablesCount = responsables.filter(r => r.up.toUpperCase() === upName.toUpperCase() && r.activo).length;
+      const isDeletable = usersInUp === 0 && movementsCount === 0 && responsablesCount === 0;
+
+      return {
+        name: upName,
+        usersInUp,
+        itemsWithStock,
+        movementsCount,
+        responsablesCount,
+        isDeletable
+      };
+    });
+  }, [ups, usuarios, inventario, transacciones, responsables]);
 
   // Filtered users
   const filtered = useMemo(() => {
@@ -81,11 +134,31 @@ export const UsuariosView: React.FC = () => {
         setNewUsername('');
         setNewName('');
         setNewPass('');
-        setNewRole('operador');
-        setNewUp('LUPITA');
+        setNewRole('supervisor');
+        setNewUp(ups[0] || 'LUPITA');
       }
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleAddUpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUpName.trim()) {
+      showToast('Ingresa el nombre de la nueva Unidad de Producción (UP)', 'warning');
+      return;
+    }
+
+    setIsAddingUp(true);
+    try {
+      const ok = await addUp(newUpName);
+      if (ok) {
+        const cleanName = newUpName.trim().toUpperCase();
+        setNewUpName('');
+        setNewUp(cleanName); // auto select for user creation
+      }
+    } finally {
+      setIsAddingUp(false);
     }
   };
 
@@ -93,6 +166,19 @@ export const UsuariosView: React.FC = () => {
     if (!deleteTargetUser) return;
     await deleteUser(deleteTargetUser);
     setDeleteTargetUser(null);
+  };
+
+  const handleConfirmDeleteUp = async () => {
+    if (!deleteTargetUp) return;
+    await deleteUp(deleteTargetUp);
+    setDeleteTargetUp(null);
+  };
+
+  const focusNewUpInput = () => {
+    newUpInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => {
+      newUpInputRef.current?.focus();
+    }, 250);
   };
 
   return (
@@ -166,23 +252,35 @@ export const UsuariosView: React.FC = () => {
                 }}
                 className="w-full border border-gray-200 rounded-xl p-2.5 bg-white text-sm font-medium focus:ring-2 focus:ring-amber-500 outline-none"
               >
-                <option value="operador">Operador</option>
+                <option value="supervisor">Supervisor</option>
                 <option value="admin">Administrador</option>
               </select>
             </div>
 
             <div className="lg:col-span-2">
-              <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wider">
-                Ubicación (UP) *
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Ubicación (UP) *
+                </label>
+                {currentUser?.role === 'admin' && (
+                  <button
+                    type="button"
+                    onClick={focusNewUpInput}
+                    className="text-[11px] font-bold text-amber-600 hover:text-amber-700 hover:underline flex items-center gap-0.5"
+                    title="Ir al panel de gestión de UPs"
+                  >
+                    <Plus className="w-3 h-3" /> Nueva UP
+                  </button>
+                )}
+              </div>
               <select
                 value={newUp}
                 onChange={e => setNewUp(e.target.value)}
                 disabled={newRole === 'admin'}
                 className="w-full border border-gray-200 rounded-xl p-2.5 bg-white text-sm font-medium focus:ring-2 focus:ring-amber-500 outline-none disabled:opacity-60 disabled:bg-gray-100"
               >
-                <option value="ALL">Todas las UP</option>
-                {INITIAL_UPS.map(loc => (
+                <option value="ALL">Todas las UP (Acceso Global)</option>
+                {ups.map(loc => (
                   <option key={loc} value={loc}>
                     {loc}
                   </option>
@@ -264,16 +362,20 @@ export const UsuariosView: React.FC = () => {
                       <td className="px-6 py-4 text-gray-700 font-medium">{user.name}</td>
 
                       <td className="px-6 py-4">
-                        <span
-                          className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold border ${
+                        <button
+                          type="button"
+                          onClick={() => setEditingUser(user)}
+                          title="Clic para editar permisos de este usuario"
+                          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border transition cursor-pointer hover:shadow-xs ${
                             isAdminRole
-                              ? 'bg-amber-50 text-amber-800 border-amber-200'
-                              : 'bg-slate-100 text-slate-700 border-slate-200'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100/70'
+                              : 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100/70'
                           }`}
                         >
                           <Shield className="w-3 h-3" />
-                          {isAdminRole ? 'Administrador' : 'Operador'}
-                        </span>
+                          <span>{isAdminRole ? 'Administrador' : 'Supervisor'}</span>
+                          <Pencil className="w-2.5 h-2.5 opacity-60 ml-0.5" />
+                        </button>
                       </td>
 
                       <td className="px-6 py-4">
@@ -284,18 +386,27 @@ export const UsuariosView: React.FC = () => {
                       </td>
 
                       <td className="px-6 py-4 text-center">
-                        <button
-                          onClick={() => setDeleteTargetUser(user.username)}
-                          disabled={isCurrent || isMainAdmin}
-                          className={`p-1.5 rounded-lg transition ${
-                            isCurrent || isMainAdmin
-                              ? 'text-gray-300 cursor-not-allowed'
-                              : 'text-rose-500 hover:text-rose-700 hover:bg-rose-50'
-                          }`}
-                          title={isCurrent ? 'No puedes eliminar tu propia cuenta' : 'Eliminar usuario'}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={() => setEditingUser(user)}
+                            className="p-1.5 rounded-lg text-amber-600 hover:text-amber-800 hover:bg-amber-50 transition"
+                            title="Editar permisos, rol o contraseña"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteTargetUser(user.username)}
+                            disabled={isCurrent || isMainAdmin}
+                            className={`p-1.5 rounded-lg transition ${
+                              isCurrent || isMainAdmin
+                                ? 'text-gray-300 cursor-not-allowed'
+                                : 'text-rose-500 hover:text-rose-700 hover:bg-rose-50'
+                            }`}
+                            title={isCurrent ? 'No puedes eliminar tu propia cuenta' : 'Eliminar usuario'}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -341,6 +452,16 @@ export const UsuariosView: React.FC = () => {
         )}
       </div>
 
+      {/* Edit User Permissions Modal */}
+      <EditUserModal
+        isOpen={Boolean(editingUser)}
+        user={editingUser}
+        currentAdminUsername={currentUser?.username}
+        totalAdminsCount={totalAdminsCount}
+        onSave={updateUser}
+        onClose={() => setEditingUser(null)}
+      />
+
       {/* Delete User Confirmation */}
       <ConfirmModal
         isOpen={Boolean(deleteTargetUser)}
@@ -350,6 +471,171 @@ export const UsuariosView: React.FC = () => {
         isDestructive={true}
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTargetUser(null)}
+      />
+
+      {/* UPs Management Card (Admin Only) */}
+      <div className="bg-white border border-gray-100 rounded-3xl shadow-sm p-6 sm:p-8 border-t-4 border-t-blue-600">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2.5">
+              <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                <MapPin className="w-5 h-5" />
+              </div>
+              Unidades de Producción (UPs / Subacopios)
+            </h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Sedes operativas autorizadas para registro de entradas, salidas, control de stock y asignación de operadores.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab('responsables')}
+              className="px-3.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 font-bold rounded-xl text-xs border border-teal-200 flex items-center gap-1.5 transition cursor-pointer"
+              title="Administrar encargados de bodega por UP"
+            >
+              <UserCheck className="w-3.5 h-3.5 text-teal-600" />
+              <span>Gestionar Responsables de Almacén</span>
+            </button>
+            <span className="px-3 py-1.5 bg-blue-50 text-blue-700 font-bold rounded-xl text-xs border border-blue-100 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5" />
+              {ups.length} UPs Activas
+            </span>
+          </div>
+        </div>
+
+        {/* Add New UP Form */}
+        <form onSubmit={handleAddUpSubmit} className="bg-slate-50/80 p-5 rounded-2xl border border-gray-100 mb-6">
+          <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">
+            Registrar Nueva Unidad de Producción (UP)
+          </label>
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+            <div className="relative flex-1">
+              <MapPin className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                ref={newUpInputRef}
+                type="text"
+                maxLength={30}
+                value={newUpName}
+                onChange={e => setNewUpName(e.target.value.toUpperCase())}
+                placeholder="Ej. BODEGA CENTRAL, CAMPO NORTE, EMPAQUE SUR..."
+                className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-semibold tracking-wide uppercase focus:ring-2 focus:ring-blue-600 outline-none text-gray-900 placeholder:normal-case placeholder:font-normal"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isAddingUp || !newUpName.trim()}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-sm px-6 py-2.5 rounded-xl transition shadow-md shadow-blue-600/20 flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{isAddingUp ? 'Registrando...' : 'Agregar UP'}</span>
+            </button>
+          </div>
+          <p className="text-[11px] text-gray-500 mt-2 flex items-center gap-1">
+            <Sparkles className="w-3 h-3 text-blue-500" />
+            La nueva UP se integrará instantáneamente a las pantallas de Entrada, Salida, Solicitudes/Recibos, Dashboard y Filtros de Stock.
+          </p>
+        </form>
+
+        {/* Grid of registered UPs */}
+        <div>
+          <h4 className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-3">
+            Sedes y Subacopios Configurados
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            {upStats.map(up => (
+              <div
+                key={up.name}
+                className="p-4 rounded-2xl border border-gray-200 bg-white hover:border-blue-300 hover:shadow-sm transition flex flex-col justify-between"
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                      <MapPin className="w-4 h-4" />
+                    </div>
+                    <span className="font-bold text-gray-900 text-sm tracking-wide">
+                      {up.name}
+                    </span>
+                  </div>
+                  {up.isDeletable ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTargetUp(up.name)}
+                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                      title={`Eliminar UP ${up.name}`}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  ) : (
+                    <span
+                      className="p-1 text-gray-400 hover:text-gray-600"
+                      title="Esta UP tiene registros de movimientos o usuarios asignados (protegida)"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 pt-2 border-t border-gray-100 text-xs text-gray-500">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <UserCheck className="w-3.5 h-3.5 text-teal-600" /> Custodio / Resp:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('responsables')}
+                      className={`font-semibold text-[11px] px-1.5 py-0.5 rounded transition cursor-pointer ${
+                        up.responsablesCount > 0
+                          ? 'bg-teal-50 text-teal-700 hover:bg-teal-100 font-bold'
+                          : 'bg-amber-50 text-amber-700 hover:bg-amber-100 font-bold'
+                      }`}
+                      title="Clic para ver o asignar responsable de almacén"
+                    >
+                      {up.responsablesCount > 0
+                        ? `${up.responsablesCount} Asignado${up.responsablesCount > 1 ? 's' : ''}`
+                        : '+ Asignar'}
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <Users className="w-3.5 h-3.5 text-gray-400" /> Operadores:
+                    </span>
+                    <span className="font-semibold text-gray-800">
+                      {up.usersInUp} {up.usersInUp === 1 ? 'usuario' : 'usuarios'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <Package className="w-3.5 h-3.5 text-gray-400" /> Con Stock:
+                    </span>
+                    <span className="font-semibold text-gray-800">
+                      {up.itemsWithStock} {up.itemsWithStock === 1 ? 'ítem' : 'ítems'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <Layers className="w-3.5 h-3.5 text-gray-400" /> Movimientos:
+                    </span>
+                    <span className="font-semibold text-gray-800">
+                      {up.movementsCount}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Delete UP Confirmation */}
+      <ConfirmModal
+        isOpen={Boolean(deleteTargetUp)}
+        title="Eliminar Unidad de Producción (UP)"
+        message={`¿Estás seguro de eliminar permanentemente la UP "${deleteTargetUp}"? Esta acción solo es posible porque la sede no cuenta con movimientos registrados ni operadores asignados.`}
+        confirmText="Sí, Eliminar UP"
+        isDestructive={true}
+        onConfirm={handleConfirmDeleteUp}
+        onCancel={() => setDeleteTargetUp(null)}
       />
     </div>
   );

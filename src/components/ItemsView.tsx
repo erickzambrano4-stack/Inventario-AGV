@@ -12,12 +12,33 @@ import {
   AlertCircle,
   HelpCircle,
   X,
-  Save
+  Save,
+  FileSpreadsheet,
+  Download
 } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
+import { MasterDataModal } from './MasterDataModal';
+import { downloadMasterTemplate, downloadMasterExportCSV } from '../lib/masterDocumentTemplate';
 
 export const ItemsView: React.FC = () => {
-  const { items, addItem, updateItem, deleteItem, deleteMultipleItems, showToast } = useInventory();
+  const {
+    items,
+    inventario,
+    ups,
+    addItem,
+    updateItem,
+    deleteItem,
+    deleteMultipleItems,
+    showToast
+  } = useInventory();
+
+  // Master Document import modal state
+  const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
+
+  // Master Document export modal state
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [exportUp, setExportUp] = useState<string>('ALL');
+  const [exportScope, setExportScope] = useState<'all' | 'selected' | 'with_stock'>('all');
 
   // Multi-selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -167,16 +188,73 @@ export const ItemsView: React.FC = () => {
     setIsBulkDeleteModalOpen(false);
   };
 
+  // Filter items to export based on selected scope
+  const itemsToExport = useMemo(() => {
+    if (exportScope === 'selected' && selectedIds.size > 0) {
+      return items.filter(i => selectedIds.has(i.id));
+    }
+    if (exportScope === 'with_stock') {
+      const invMap = new Map<string, number>(inventario.map(inv => [inv.id, inv.stockTotal]));
+      return items.filter(i => (invMap.get(i.id) ?? 0) > 0);
+    }
+    return items;
+  }, [items, inventario, exportScope, selectedIds]);
+
+  const handleExecuteExport = () => {
+    if (itemsToExport.length === 0) {
+      showToast('No hay productos que coincidan con los criterios de exportación', 'warning');
+      return;
+    }
+    downloadMasterExportCSV(itemsToExport, inventario, exportUp);
+    showToast(`Base de ${itemsToExport.length} ítems exportada exitosamente en formato maestro`, 'success');
+    setIsExportModalOpen(false);
+  };
+
   return (
     <div className="space-y-6">
       {/* Add Item Card */}
       <div className="bg-white border border-gray-100 rounded-3xl shadow-sm p-6 sm:p-8">
-        <h2 className="text-xl font-bold text-gray-900 mb-5 flex items-center gap-2.5">
-          <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
-            <Plus className="w-5 h-5" />
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-5">
+          <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2.5">
+            <div className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+              <Plus className="w-5 h-5" />
+            </div>
+            Agregar Nuevo Producto al Catálogo
+          </h2>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setExportScope('all');
+                setIsExportModalOpen(true);
+              }}
+              className="px-3.5 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold flex items-center gap-1.5 transition active:scale-95 shadow-xs cursor-pointer"
+              title="Exportar base completa de ítems con formato de Documento Maestro"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-700" />
+              Exportar Formato Maestro
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsMasterModalOpen(true)}
+              className="px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200/90 rounded-xl text-xs font-bold flex items-center gap-2 transition active:scale-95 shadow-xs cursor-pointer"
+              title="Cargar documento maestro CSV/Excel para importar en lote"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-blue-600" />
+              Documento Maestro / Importar
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadMasterTemplate()}
+              className="px-3 py-2.5 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              title="Descargar plantilla maestra (.CSV para Excel)"
+            >
+              <Download className="w-3.5 h-3.5 text-gray-500" />
+              Plantilla CSV
+            </button>
           </div>
-          Agregar Nuevo Producto al Catálogo
-        </h2>
+        </div>
 
         <form onSubmit={handleAddItem} className="bg-slate-50/70 p-5 rounded-2xl border border-gray-100">
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-end">
@@ -277,8 +355,20 @@ export const ItemsView: React.FC = () => {
           <div className="flex items-center gap-2.5 ml-auto">
             <button
               type="button"
+              onClick={() => {
+                setExportScope('selected');
+                setIsExportModalOpen(true);
+              }}
+              className="px-3.5 py-1.5 rounded-xl text-xs font-bold text-emerald-800 bg-emerald-100/80 hover:bg-emerald-200/80 border border-emerald-300 transition flex items-center gap-1.5 cursor-pointer"
+              title="Exportar ítems seleccionados en formato Documento Maestro"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-700" />
+              Exportar ({selectedIds.size})
+            </button>
+            <button
+              type="button"
               onClick={handleClearSelection}
-              className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-gray-600 hover:text-gray-900 hover:bg-white transition"
+              className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-gray-600 hover:text-gray-900 hover:bg-white transition cursor-pointer"
             >
               Cancelar selección
             </button>
@@ -566,6 +656,147 @@ export const ItemsView: React.FC = () => {
         onConfirm={handleConfirmBulkDelete}
         onCancel={() => setIsBulkDeleteModalOpen(false)}
       />
+
+      {/* Master Data Import Modal */}
+      <MasterDataModal
+        isOpen={isMasterModalOpen}
+        onClose={() => setIsMasterModalOpen(false)}
+      />
+
+      {/* Master Data Export Modal */}
+      {isExportModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 mb-5 pb-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-emerald-50 text-emerald-700 rounded-2xl border border-emerald-100">
+                  <Download className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-lg">
+                    Exportar Base de Ítems
+                  </h3>
+                  <p className="text-xs text-emerald-700 font-semibold flex items-center gap-1 mt-0.5">
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    Formato oficial compatible con el Documento Maestro
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Information Banner */}
+            <div className="p-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-2xl mb-5 text-xs text-emerald-900 space-y-1">
+              <p className="font-semibold flex items-center gap-1.5">
+                <span>✓ Estructura 100% compatible para respaldo o re-importación</span>
+              </p>
+              <p className="text-[11px] text-emerald-800">
+                El archivo generado incluirá los encabezados oficiales: <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">CODIGO_ITEM</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">DESCRIPCION</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">AREA_CATEGORIA</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">STOCK_MINIMO</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">STOCK_INICIAL</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">UBICACION_UP</code>, <code className="bg-emerald-100/70 px-1 py-0.5 rounded font-mono text-[10px]">NOTAS</code>.
+              </p>
+            </div>
+
+            {/* Form controls */}
+            <div className="space-y-4 mb-6">
+              {/* Scope */}
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">
+                  Productos a Incluir
+                </label>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2.5 p-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 cursor-pointer text-xs font-medium text-gray-800">
+                    <input
+                      type="radio"
+                      name="exportScope"
+                      checked={exportScope === 'all'}
+                      onChange={() => setExportScope('all')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>Todo el catálogo activo ({items.length} productos)</span>
+                  </label>
+
+                  {selectedIds.size > 0 && (
+                    <label className="flex items-center gap-2.5 p-2.5 rounded-xl border border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 cursor-pointer text-xs font-medium text-emerald-900">
+                      <input
+                        type="radio"
+                        name="exportScope"
+                        checked={exportScope === 'selected'}
+                        onChange={() => setExportScope('selected')}
+                        className="text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>Únicamente los {selectedIds.size} productos seleccionados</span>
+                    </label>
+                  )}
+
+                  <label className="flex items-center gap-2.5 p-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 cursor-pointer text-xs font-medium text-gray-800">
+                    <input
+                      type="radio"
+                      name="exportScope"
+                      checked={exportScope === 'with_stock'}
+                      onChange={() => setExportScope('with_stock')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>Solo productos con existencias físicas (Stock total &gt; 0)</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* UP Selection */}
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                  Ubicación / Unidad de Producción (UP)
+                </label>
+                <select
+                  value={exportUp}
+                  onChange={e => setExportUp(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl p-2.5 bg-white text-xs font-semibold text-gray-800 focus:ring-2 focus:ring-emerald-500 outline-none"
+                >
+                  <option value="ALL">ALL — Todas las UPs (Desglose individual por sede con stock)</option>
+                  {ups.map(loc => (
+                    <option key={loc} value={loc}>
+                      {loc} — Exportar existencias exclusivas de esta sede
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Al elegir "ALL", el exportador crea filas detalladas para cada sede que mantenga stock del producto.
+                </p>
+              </div>
+
+              {/* Summary pill */}
+              <div className="p-3 bg-gray-50 rounded-xl border border-gray-100 flex items-center justify-between text-xs">
+                <span className="text-gray-500 font-medium">Total de ítems a procesar:</span>
+                <span className="font-bold text-gray-900 text-sm">{itemsToExport.length} productos</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setIsExportModalOpen(false)}
+                className="px-4 py-2.5 text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl font-medium transition cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteExport}
+                className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-xs shadow-md shadow-emerald-600/25 transition flex items-center gap-2 cursor-pointer active:scale-95"
+              >
+                <Download className="w-4 h-4" />
+                Descargar Archivo CSV Maestro
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

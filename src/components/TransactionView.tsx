@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { useInventory } from '../context/InventoryContext';
-import { INITIAL_UPS } from '../types';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -11,7 +10,9 @@ import {
   Save,
   History,
   AlertCircle,
-  Package
+  Package,
+  Lock,
+  Shield
 } from 'lucide-react';
 
 interface TransactionViewProps {
@@ -23,6 +24,11 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
     items,
     inventario,
     currentUser,
+    userAllowedUps,
+    isGlobalAccess,
+    primaryUp,
+    isUpAuthorized,
+    ups,
     addTransaction,
     setActiveTab,
     showToast
@@ -32,21 +38,21 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
 
   const [itemId, setItemId] = useState('');
   const [qty, setQty] = useState('');
-  const [up, setUp] = useState('');
+  const [up, setUp] = useState(() => (!isGlobalAccess ? primaryUp : ''));
   const [fecha, setFecha] = useState(() => new Date().toISOString().split('T')[0]);
   const [notas, setNotas] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Set default UP based on current user
+  // Set default UP based on current user authorization
   useEffect(() => {
-    if (currentUser) {
-      if (currentUser.role === 'operador' && currentUser.up !== 'ALL') {
-        setUp(currentUser.up);
-      } else if (!up && INITIAL_UPS.length > 0) {
-        setUp(INITIAL_UPS[0]);
+    if (!isGlobalAccess) {
+      if (!up || !userAllowedUps.includes(up.toUpperCase())) {
+        setUp(primaryUp);
       }
+    } else if (!up && ups.length > 0) {
+      setUp(ups[0]);
     }
-  }, [currentUser, up]);
+  }, [currentUser, isGlobalAccess, userAllowedUps, primaryUp, up, ups]);
 
   // Selected item info
   const selectedItem = inventario.find(i => i.id === itemId);
@@ -213,32 +219,55 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
 
             {/* UP Location */}
             <div>
-              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
-                Ubicación Productora (UP) *
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2 flex items-center justify-between">
+                <span>Ubicación Productora (UP) *</span>
+                {!isGlobalAccess && (
+                  <span className="text-[10px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                    Sede Asignada
+                  </span>
+                )}
               </label>
-              <div className="relative">
-                <MapPin className="w-5 h-5 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <select
-                  value={up}
-                  onChange={e => setUp(e.target.value)}
-                  disabled={currentUser?.role === 'operador' && currentUser.up !== 'ALL'}
-                  className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-blue-600 focus:bg-white outline-none transition appearance-none cursor-pointer disabled:opacity-75 disabled:bg-gray-100"
-                  required
-                >
-                  {currentUser?.role === 'operador' && currentUser.up !== 'ALL' ? (
-                    <option value={currentUser.up}>{currentUser.up}</option>
-                  ) : (
-                    INITIAL_UPS.map(loc => (
+              {isGlobalAccess ? (
+                <div className="relative">
+                  <MapPin className="w-5 h-5 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <select
+                    value={up}
+                    onChange={e => setUp(e.target.value)}
+                    className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 focus:ring-blue-600 focus:bg-white outline-none transition appearance-none cursor-pointer"
+                    required
+                  >
+                    {ups.map(loc => (
                       <option key={loc} value={loc}>
                         {loc}
                       </option>
-                    ))
-                  )}
-                </select>
-              </div>
-              {currentUser?.role === 'operador' && currentUser.up !== 'ALL' && (
+                    ))}
+                  </select>
+                </div>
+              ) : userAllowedUps.length > 1 ? (
+                <div className="relative">
+                  <MapPin className="w-5 h-5 text-blue-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <select
+                    value={up}
+                    onChange={e => setUp(e.target.value)}
+                    className="w-full pl-11 pr-4 py-3 bg-blue-50/50 border border-blue-200 rounded-xl text-sm font-semibold text-blue-900 focus:ring-2 focus:ring-blue-600 focus:bg-white outline-none transition appearance-none cursor-pointer"
+                    required
+                  >
+                    {userAllowedUps.map(loc => (
+                      <option key={loc} value={loc}>
+                        {loc}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="w-full px-4 py-3 bg-blue-50/70 border border-blue-200 rounded-xl text-sm font-bold text-blue-900 flex items-center gap-2.5">
+                  <Lock className="w-4 h-4 text-blue-600" />
+                  <span>UP {primaryUp}</span>
+                </div>
+              )}
+              {!isGlobalAccess && (
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Tu usuario está asignado exclusivamente a <strong>{currentUser.up}</strong>.
+                  Tu usuario está autorizado exclusivamente para la sede <strong>{primaryUp}</strong>.
                 </p>
               )}
             </div>
