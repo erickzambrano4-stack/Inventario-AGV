@@ -84,6 +84,7 @@ export const SolicitudesView: React.FC = () => {
   const [formCargo, setFormCargo] = useState('');
   const [formFecha, setFormFecha] = useState(() => new Date().toISOString().split('T')[0]);
   const [formPrioridad, setFormPrioridad] = useState<'normal' | 'urgente'>('normal');
+  const [formEstado, setFormEstado] = useState<EstadoSolicitud>('pendiente');
   const [formArea, setFormArea] = useState('');
   const [formObservaciones, setFormObservaciones] = useState('');
 
@@ -137,6 +138,7 @@ export const SolicitudesView: React.FC = () => {
     setFormArea('');
     setFormObservaciones('');
     setFormPrioridad('normal');
+    setFormEstado('pendiente');
     setFormFecha(new Date().toISOString().split('T')[0]);
     setLineItems([]);
     setSelectedProductToAdd('');
@@ -275,6 +277,7 @@ export const SolicitudesView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      const isApproved = formEstado === 'aprobada' || formEstado === 'entregada';
       const created = await addSolicitud(
         {
           tipo: 'solicitud',
@@ -287,11 +290,11 @@ export const SolicitudesView: React.FC = () => {
           areaAplicacion: formArea.trim() || undefined,
           observaciones: formObservaciones.trim() || undefined,
           items: lineItems,
-          estado: 'aprobada',
+          estado: formEstado,
           usuarioCreador: currentUser?.username || 'sistema'
         },
-        true, // Afectar inventario en automático
-        'entrada' // Entrada automática al inventario de la UP
+        isApproved, // Solo afecta inventario si el estatus es Ingresada / Aprobada
+        'entrada'
       );
 
       if (created) {
@@ -352,7 +355,7 @@ export const SolicitudesView: React.FC = () => {
   }, [authorizedSolicitudes]);
 
   const handleQuickStatusChange = async (sol: SolicitudInsumo, nuevoEstado: EstadoSolicitud) => {
-    await updateSolicitudEstado(sol.id, nuevoEstado, false, 'entrada');
+    await updateSolicitudEstado(sol.id, nuevoEstado);
   };
 
   const handleConfirmDelete = async () => {
@@ -676,10 +679,15 @@ export const SolicitudesView: React.FC = () => {
                     </div>
 
                     {/* Stock impact indicator */}
-                    {sol.aplicadoInventario && (
+                    {sol.aplicadoInventario ? (
                       <div className="pt-1.5 flex items-center gap-1.5 text-[10px] font-bold text-emerald-700">
                         <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                        <span>Ingresado en automático al inventario</span>
+                        <span>Ingresado a Inventario ({sol.up})</span>
+                      </div>
+                    ) : (
+                      <div className="pt-1.5 flex items-center gap-1.5 text-[10px] font-bold text-amber-700">
+                        <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>Pendiente de Ingreso a Inventario</span>
                       </div>
                     )}
                   </div>
@@ -699,8 +707,8 @@ export const SolicitudesView: React.FC = () => {
                         : 'bg-rose-50 text-rose-700 border-rose-200'
                     }`}
                   >
-                    <option value="aprobada">Aprobada</option>
-                    <option value="pendiente">Pendiente</option>
+                    <option value="aprobada">Ingresada / Aprobada</option>
+                    <option value="pendiente">Pendiente (Sin ingreso)</option>
                     <option value="cancelada">Cancelada</option>
                   </select>
 
@@ -859,8 +867,8 @@ export const SolicitudesView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Solicitante, Fecha, Prioridad */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Solicitante, Fecha, Prioridad, Estatus */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block font-bold text-gray-700 uppercase tracking-wider mb-1.5">
                     Solicitante / Cuadrilla *
@@ -899,6 +907,24 @@ export const SolicitudesView: React.FC = () => {
                   >
                     <option value="normal">Normal</option>
                     <option value="urgente">Urgente / Inmediata</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                    Estatus de Solicitud *
+                  </label>
+                  <select
+                    value={formEstado}
+                    onChange={e => setFormEstado(e.target.value as EstadoSolicitud)}
+                    className={`w-full px-3.5 py-2.5 rounded-xl font-bold focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer border ${
+                      formEstado === 'aprobada'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : 'bg-amber-50 text-amber-800 border-amber-300'
+                    }`}
+                  >
+                    <option value="pendiente">Pendiente (No ingresa a inventario aún)</option>
+                    <option value="aprobada">Ingresada / Aprobada (Ingresa de inmediato)</option>
                   </select>
                 </div>
               </div>
@@ -1202,17 +1228,31 @@ export const SolicitudesView: React.FC = () => {
               </div>
 
               {/* Automatic inventory entry notice */}
-              <div className="p-4 rounded-2xl border border-emerald-200 bg-emerald-50/80 flex items-start gap-3">
-                <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-bold text-emerald-950 block text-xs">
-                    Ingreso Automático a Inventario Activo
-                  </span>
-                  <span className="text-[11px] text-emerald-800 block mt-0.5 leading-relaxed">
-                    Al confirmar esta solicitud, el sistema registrará automáticamente una <strong>ENTRADA de inventario</strong> para cada uno de los productos y cantidades en la <strong>UP {formUp}</strong>, actualizando las existencias de forma inmediata y agregándolos al catálogo si son nuevos.
-                  </span>
+              {formEstado === 'aprobada' ? (
+                <div className="p-4 rounded-2xl border border-emerald-200 bg-emerald-50/80 flex items-start gap-3">
+                  <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-emerald-950 block text-xs">
+                      Estatus: Ingresada / Aprobada (Afecta Inventario)
+                    </span>
+                    <span className="text-[11px] text-emerald-800 block mt-0.5 leading-relaxed">
+                      Al guardar con estatus <strong>Aprobada</strong>, el sistema registrará automáticamente una <strong>ENTRADA de inventario</strong> para cada uno de los productos y cantidades en la <strong>UP {formUp}</strong>, actualizando las existencias de forma inmediata.
+                    </span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="p-4 rounded-2xl border border-amber-200 bg-amber-50/90 flex items-start gap-3">
+                  <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-amber-950 block text-xs">
+                      Estatus: Pendiente (Sin Ingreso a Inventario)
+                    </span>
+                    <span className="text-[11px] text-amber-800 block mt-0.5 leading-relaxed">
+                      <strong>No se ingresará nada al inventario</strong> mientras la solicitud permanezca en estatus <strong>Pendiente</strong>. Los insumos se sumarán a las existencias de la UP únicamente cuando sea autorizada / aprobada.
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Footer actions */}
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-gray-100">
@@ -1226,10 +1266,20 @@ export const SolicitudesView: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isSubmitting || lineItems.length === 0}
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold text-xs shadow-md shadow-blue-600/25 transition flex items-center gap-2 cursor-pointer active:scale-95"
+                  className={`px-6 py-2.5 disabled:opacity-50 text-white rounded-xl font-bold text-xs shadow-md transition flex items-center gap-2 cursor-pointer active:scale-95 ${
+                    formEstado === 'aprobada'
+                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/25'
+                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/25'
+                  }`}
                 >
                   <Printer className="w-4 h-4" />
-                  <span>{isSubmitting ? 'Guardando...' : 'Generar Solicitud e Ingresar a Inventario'}</span>
+                  <span>
+                    {isSubmitting
+                      ? 'Guardando...'
+                      : formEstado === 'aprobada'
+                      ? 'Generar Solicitud e Ingresar a Inventario'
+                      : 'Generar Solicitud (Pendiente de Ingreso)'}
+                  </span>
                 </button>
               </div>
 

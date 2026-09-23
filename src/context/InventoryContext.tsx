@@ -1286,7 +1286,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return true;
   };
 
-  // Add Solicitud de Insumos (con ingreso automático al inventario)
+  // Add Solicitud de Insumos (solo ingresa a inventario si el estatus es Aprobada / Ingresada)
   const addSolicitud = async (
     data: Omit<SolicitudInsumo, 'id' | 'folio' | 'fechaCreacion'>,
     afectarInventario: boolean = true,
@@ -1314,22 +1314,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const newId = 'doc-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
 
-    // 1. Ensure all requested items exist in master catalog, otherwise create them
-    for (const line of data.items) {
-      const cleanItemId = line.itemId.trim().toUpperCase();
-      const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
-      if (!exists) {
-        await addItem({
-          id: cleanItemId,
-          desc: line.desc.trim(),
-          area: line.area || 'GENERAL',
-          reorden: 0
-        });
-      }
-    }
+    // Strict Rule: Only enter into inventory if status is 'aprobada' or 'entregada'
+    const isApprovedOrIngresada = data.estado === 'aprobada' || data.estado === 'entregada';
+    const shouldApplyStock = isApprovedOrIngresada && (afectarInventario !== false);
 
-    // 2. Automatically register 'entrada' movement for each item to increase UP stock
-    if (afectarInventario) {
+    // 1. Ensure all requested items exist in master catalog IF applying to inventory
+    if (shouldApplyStock) {
+      for (const line of data.items) {
+        const cleanItemId = line.itemId.trim().toUpperCase();
+        const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
+        if (!exists) {
+          await addItem({
+            id: cleanItemId,
+            desc: line.desc.trim(),
+            area: line.area || 'GENERAL',
+            reorden: 0
+          });
+        }
+      }
+
+      // 2. Automatically register 'entrada' movement for each item to increase UP stock
       for (const item of data.items) {
         const cleanItemId = item.itemId.trim().toUpperCase();
         await addTransaction({
@@ -1338,7 +1342,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           qty: Number(item.cantidad) || 0,
           up: upClean,
           fecha: data.fecha || new Date().toISOString().split('T')[0],
-          notas: `Solicitud de Insumos ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`
+          notas: `Solicitud de Insumos Aprobada ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`
         });
       }
     }
@@ -1351,8 +1355,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       folio,
       usuarioCreador: currentUser.username,
       fechaCreacion: Date.now(),
-      aplicadoInventario: afectarInventario,
-      estado: data.estado || 'aprobada'
+      aplicadoInventario: shouldApplyStock,
+      estado: data.estado || 'pendiente'
     };
 
     const updated = [newSolicitud, ...solicitudes];
@@ -1367,28 +1371,34 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    showToast(`Solicitud ${folio} generada. Se agregaron los productos automáticamente al inventario de UP ${upClean}.`, 'success');
+    if (shouldApplyStock) {
+      showToast(`Solicitud ${folio} generada con estatus APROBADA. Se ingresaron los productos al inventario de UP ${upClean}.`, 'success');
+    } else {
+      showToast(`Solicitud ${folio} registrada en estatus PENDIENTE. No se ingresará al inventario hasta ser Aprobada / Ingresada.`, 'info');
+    }
 
     return newSolicitud;
   };
 
-  // Update Solicitud Estado
+  // Update Solicitud Estado (con aplicación estricta o reversión de inventario según el estatus)
   const updateSolicitudEstado = async (
     id: string,
     nuevoEstado: EstadoSolicitud,
-    afectarInventario: boolean = false,
+    _afectarInventario?: boolean,
     tipoMovimiento: 'salida' | 'entrada' = 'entrada'
   ): Promise<boolean> => {
     const target = solicitudes.find(s => s.id === id);
     if (!target) return false;
 
-    const willApplyStock = afectarInventario && !target.aplicadoInventario && (nuevoEstado === 'entregada' || nuevoEstado === 'aprobada');
+    const isTargetApproved = nuevoEstado === 'entregada' || nuevoEstado === 'aprobada';
+    const willApplyStock = !target.aplicadoInventario && isTargetApproved;
+    const willRevertStock = target.aplicadoInventario && !isTargetApproved;
 
     const updatedSolicitud: SolicitudInsumo = {
       ...target,
       estado: nuevoEstado,
       fechaModificacion: Date.now(),
-      aplicadoInventario: target.aplicadoInventario || willApplyStock
+      aplicadoInventario: isTargetApproved ? true : false
     };
 
     const updated = solicitudes.map(s => s.id === id ? updatedSolicitud : s);
@@ -1404,19 +1414,49 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     if (willApplyStock) {
+      // 1. Ensure all requested items exist in catalog
+      for (const line of target.items) {
+        const cleanItemId = line.itemId.trim().toUpperCase();
+        const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
+        if (!exists) {
+          await addItem({
+            id: cleanItemId,
+            desc: line.desc.trim(),
+            area: line.area || 'GENERAL',
+            reorden: 0
+          });
+        }
+      }
+
+      // 2. Add 'entrada' transactions
       for (const item of target.items) {
+        const cleanItemId = item.itemId.trim().toUpperCase();
         await addTransaction({
           tipo: tipoMovimiento,
-          itemId: item.itemId,
-          qty: item.cantidad,
+          itemId: cleanItemId,
+          qty: Number(item.cantidad) || 0,
           up: target.up,
           fecha: new Date().toISOString().split('T')[0],
-          notas: `Solicitud de Insumos ${target.folio}: ${target.solicitante}`
+          notas: `Ingreso a Inventario por Solicitud Aprobada ${target.folio}: ${target.solicitante}`
         });
       }
-      showToast(`Estado actualizado a "${nuevoEstado.toUpperCase()}" y stock actualizado en UP ${target.up}`, 'success');
+      showToast(`Solicitud ${target.folio} APROBADA: Se ingresaron ${target.items.length} insumos al inventario de ${target.up}.`, 'success');
+    } else if (willRevertStock) {
+      // Revert previous entrada if cancelled or changed to pending
+      for (const item of target.items) {
+        const cleanItemId = item.itemId.trim().toUpperCase();
+        await addTransaction({
+          tipo: 'salida',
+          itemId: cleanItemId,
+          qty: Number(item.cantidad) || 0,
+          up: target.up,
+          fecha: new Date().toISOString().split('T')[0],
+          notas: `Reversión de Inventario: Solicitud ${target.folio} cambió a ${nuevoEstado.toUpperCase()}`
+        });
+      }
+      showToast(`Solicitud ${target.folio} en estatus "${nuevoEstado.toUpperCase()}": Se revirtió el ingreso de existencias en ${target.up}.`, 'warning');
     } else {
-      showToast(`Estado actualizado a "${nuevoEstado.toUpperCase()}"`, 'success');
+      showToast(`Estado de solicitud ${target.folio} actualizado a "${nuevoEstado.toUpperCase()}"`, 'info');
     }
 
     return true;

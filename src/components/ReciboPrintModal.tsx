@@ -8,7 +8,8 @@ import {
   Calendar,
   User,
   ShieldCheck,
-  ClipboardList
+  ClipboardList,
+  Clock
 } from 'lucide-react';
 
 interface ReciboPrintModalProps {
@@ -322,11 +323,18 @@ export const ReciboPrintModal: React.FC<ReciboPrintModalProps> = ({
             </div>
 
             {/* Inventory impact notice */}
-            {solicitud.aplicadoInventario && (
+            {solicitud.aplicadoInventario ? (
               <div className="p-3 mb-6 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-medium flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  <strong>Ingreso a Inventario Confirmado:</strong> Cada uno de los productos y cantidades anteriores fue agregado automáticamente como ENTRADA de inventario en la UP {solicitud.up}.
+                  <strong>Ingreso a Inventario Confirmado:</strong> Cada uno de los productos y cantidades anteriores fue agregado como ENTRADA de inventario en la UP {solicitud.up}.
+                </span>
+              </div>
+            ) : (
+              <div className="p-3 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-medium flex items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  <strong>Pendiente de Aprobación:</strong> Esta solicitud NO ha sido ingresada al inventario. Los productos y cantidades se ingresarán una vez autorizada / aprobada.
                 </span>
               </div>
             )}
