@@ -27,7 +27,7 @@ service cloud.firestore {
     }
 
     match /items/{itemId} {
-      allow read: if isValidId(itemId);
+      allow get, list: if true;
       allow create: if isValidId(itemId) && itemId == incoming().id && isValidItem(incoming());
       allow update: if isValidId(itemId) && itemId == incoming().id && incoming().id == existing().id && isValidItem(incoming());
       allow delete: if isValidId(itemId);
@@ -48,7 +48,7 @@ service cloud.firestore {
     }
 
     match /transacciones/{idDoc} {
-      allow read: if isValidId(idDoc);
+      allow get, list: if true;
       allow create: if isValidId(idDoc) && idDoc == incoming().idDoc && isValidTransaccion(incoming());
       allow update: if isValidId(idDoc) && idDoc == incoming().idDoc && incoming().idDoc == existing().idDoc && isValidTransaccion(incoming());
       allow delete: if isValidId(idDoc);
@@ -66,7 +66,7 @@ service cloud.firestore {
     }
 
     match /usuarios/{username} {
-      allow read: if isValidId(username);
+      allow get, list: if true;
       allow create: if isValidId(username) && username == incoming().username && isValidUsuario(incoming());
       allow update: if isValidId(username) && username == incoming().username && incoming().username == existing().username && isValidUsuario(incoming());
       allow delete: if isValidId(username);
@@ -87,7 +87,7 @@ service cloud.firestore {
     }
 
     match /solicitudes/{solId} {
-      allow read: if isValidId(solId);
+      allow get, list: if true;
       allow create: if isValidId(solId) && solId == incoming().id && isValidSolicitud(incoming());
       allow update: if isValidId(solId) && solId == incoming().id && incoming().id == existing().id && isValidSolicitud(incoming());
       allow delete: if isValidId(solId);
@@ -95,13 +95,13 @@ service cloud.firestore {
 
     // 5. Configuración General, Sedes/UPs y Responsables
     match /configuracion/{docId} {
-      allow read: if isValidId(docId);
+      allow get, list: if true;
       allow write: if isValidId(docId) && docId in ['general', 'locations', 'responsables'];
     }
 
     // 6. Test de Conectividad en Tiempo Real
     match /_connection_test/{docId} {
-      allow read, write: if isValidId(docId);
+      allow get, list, write: if isValidId(docId);
     }
 
     // Bloqueo total por defecto para colecciones no declaradas

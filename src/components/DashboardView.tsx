@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   CircleDot,
   BarChart3,
+  BarChartHorizontal,
   ChevronLeft,
   ChevronRight,
   ArrowUpDown,
@@ -75,7 +76,9 @@ export const DashboardView: React.FC = () => {
   // Chart configuration state (Horizontal layout with product names)
   const [chartSort, setChartSort] = useState<'alertas' | 'menor_stock' | 'mayor_stock' | 'nombre'>('alertas');
   const [chartAreaFilter, setChartAreaFilter] = useState<string>('all');
-  const [chartType, setChartType] = useState<'points' | 'bars'>('points');
+  const [chartType, setChartType] = useState<'points' | 'bars'>('bars');
+  const [chartOrientation, setChartOrientation] = useState<'horizontal' | 'vertical'>('horizontal');
+  const [chartLimit, setChartLimit] = useState<'all' | '15' | '30' | '50'>('all');
 
   // Dynamic available UPs (filtered strictly by user authorization)
   const availableUps = useMemo(() => {
@@ -238,9 +241,9 @@ export const DashboardView: React.FC = () => {
     return items.map(item => {
       const stockToDisplay = selectedUp === 'all' ? item.stockTotal : (item.upStock[selectedUp] || 0);
       const isAlert = stockToDisplay <= (item.reorden || 0);
-      // Format short display name for X-axis while preserving full name in tooltip
+      // Format display name for axis while preserving full name in tooltip
       const truncatedName =
-        item.desc.length > 24 ? `${item.desc.substring(0, 22)}...` : item.desc;
+        item.desc.length > 28 ? `${item.desc.substring(0, 26)}...` : item.desc;
 
       return {
         name: truncatedName,
@@ -258,10 +261,24 @@ export const DashboardView: React.FC = () => {
     });
   }, [inventario, chartAreaFilter, search, chartSort, selectedUp, onlyWithStock, isGlobalAccess, primaryUp]);
 
-  // Dynamic minimum width so all product names have sufficient room horizontally
+  // Displayed chart data filtered by selected limit (Top 15, 30, 50, or all)
+  const displayedChartData = useMemo(() => {
+    if (chartLimit === 'all') return chartData;
+    const limit = parseInt(chartLimit, 10);
+    return chartData.slice(0, limit);
+  }, [chartData, chartLimit]);
+
+  // Dynamic dimensions based on orientation and items displayed
   const chartMinWidth = useMemo(() => {
-    return Math.max(700, chartData.length * 130);
-  }, [chartData.length]);
+    if (chartOrientation === 'horizontal') return '100%';
+    return `${Math.max(700, displayedChartData.length * 100)}px`;
+  }, [chartOrientation, displayedChartData.length]);
+
+  const chartDynamicHeight = useMemo(() => {
+    if (chartOrientation === 'vertical') return 420;
+    // For horizontal orientation, scale height dynamically so each product row is comfortable
+    return Math.max(380, displayedChartData.length * 36);
+  }, [chartOrientation, displayedChartData.length]);
 
   // Export to CSV directly matching current filter
   const handleExportCSV = () => {
@@ -753,24 +770,30 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Stock Chart: Horizontal Layout with Product Names */}
+      {/* Main Stock Chart: Horizontal & Vertical Interactive Layout */}
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-5">
         {/* Chart Header & Title */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-gray-100 pb-4">
           <div>
             <div className="flex items-center gap-2.5">
               <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
-                <CircleDot className="w-5 h-5" />
+                {chartOrientation === 'horizontal' ? (
+                  <BarChartHorizontal className="w-5 h-5" />
+                ) : (
+                  <BarChart3 className="w-5 h-5" />
+                )}
               </div>
               <div>
                 <h3 className="text-lg font-bold text-gray-900 tracking-tight flex items-center gap-2">
-                  Gráfica Horizontal:{' '}
+                  Gráfica {chartOrientation === 'horizontal' ? 'Horizontal' : 'Vertical'}:{' '}
                   {selectedUp === 'all' ? 'Existencias Consolidadas' : `Existencias en UP: ${selectedUp}`} vs. Reorden
                 </h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  {selectedUp === 'all'
-                    ? 'Visualización horizontal de stock global. Puntos rojos señalan existencias por debajo del reorden mínimo.'
-                    : `Visualizando existencias particulares de ${selectedUp}. Puntos rojos indican stock crítico o reorden para esta ubicación.`}
+                  {chartOrientation === 'horizontal'
+                    ? selectedUp === 'all'
+                      ? 'Visualización horizontal en filas: nombres a la izquierda y barras extendidas a la derecha. Barras rojas señalan stock bajo el reorden.'
+                      : `Visualización horizontal en ${selectedUp}. Barras rojas señalan existencias por debajo del reorden mínimo para esta sede.`
+                    : 'Visualización vertical en columnas. Puntos o columnas rojas indican stock crítico por debajo del reorden.'}
                 </p>
               </div>
             </div>
@@ -779,31 +802,31 @@ export const DashboardView: React.FC = () => {
           {/* Legend indicators */}
           <div className="flex flex-wrap items-center gap-3 text-xs bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-100">
             <span className="flex items-center gap-1.5 font-medium text-gray-700">
-              <span className="w-3 h-3 rounded-full bg-blue-600 inline-block shadow-sm" />
-              Stock Normal (●)
+              <span className="w-3 h-3 rounded-xs bg-blue-600 inline-block shadow-2xs" />
+              Stock Normal ({chartType === 'points' ? '●' : '■'})
             </span>
             <span className="flex items-center gap-1.5 font-semibold text-rose-600">
-              <span className="w-3 h-3 rounded-full bg-rose-500 inline-block shadow-sm" />
-              Stock Crítico (●)
+              <span className="w-3 h-3 rounded-xs bg-rose-500 inline-block shadow-2xs" />
+              Stock Crítico ({chartType === 'points' ? '●' : '■'})
             </span>
             <span className="flex items-center gap-1.5 font-medium text-amber-700">
-              <span className="w-2.5 h-2.5 bg-amber-500 rotate-45 inline-block shadow-sm" />
-              Reorden (◆)
+              <span className="w-2.5 h-2.5 bg-amber-500 rotate-45 inline-block shadow-2xs" />
+              Reorden ({chartType === 'points' ? '◆' : '■'})
             </span>
           </div>
         </div>
 
         {/* Chart Controls Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 bg-gray-50/70 p-3 rounded-xl border border-gray-200/80 text-xs">
-          {/* Left Controls: Sorting & Filter */}
-          <div className="flex flex-wrap items-center gap-3">
+          {/* Left Controls: Sorting, Filter, Limit */}
+          <div className="flex flex-wrap items-center gap-2.5">
             {/* Sorting Selector */}
             <div className="flex items-center gap-1.5">
               <ArrowUpDown className="w-3.5 h-3.5 text-gray-400" />
               <select
                 value={chartSort}
                 onChange={e => setChartSort(e.target.value as any)}
-                className="bg-white border border-gray-200 text-gray-700 py-1 px-2.5 rounded-lg text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                className="bg-white border border-gray-200 text-gray-700 py-1 px-2.5 rounded-lg text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs cursor-pointer"
               >
                 <option value="alertas">Alertas primero (Críticos)</option>
                 <option value="menor_stock">Menor Stock primero</option>
@@ -819,7 +842,7 @@ export const DashboardView: React.FC = () => {
                 <select
                   value={chartAreaFilter}
                   onChange={e => setChartAreaFilter(e.target.value)}
-                  className="bg-white border border-gray-200 text-gray-700 py-1 px-2.5 rounded-lg text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                  className="bg-white border border-gray-200 text-gray-700 py-1 px-2.5 rounded-lg text-xs font-medium outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs cursor-pointer"
                 >
                   <option value="all">Todas las áreas ({inventario.length})</option>
                   {uniqueAreas.map(area => (
@@ -830,6 +853,21 @@ export const DashboardView: React.FC = () => {
                 </select>
               </div>
             )}
+
+            {/* Limit Selector */}
+            <div className="flex items-center gap-1.5 bg-white border border-gray-200 px-2.5 py-1 rounded-lg shadow-2xs">
+              <span className="text-gray-500 font-medium">Ver:</span>
+              <select
+                value={chartLimit}
+                onChange={e => setChartLimit(e.target.value as any)}
+                className="bg-transparent text-gray-700 text-xs font-semibold outline-none cursor-pointer"
+              >
+                <option value="all">Todos ({chartData.length})</option>
+                <option value="15">Top 15</option>
+                <option value="30">Top 30</option>
+                <option value="50">Top 50</option>
+              </select>
+            </div>
 
             {/* Quick toggle in chart: Solo con inventario */}
             <button
@@ -848,24 +886,44 @@ export const DashboardView: React.FC = () => {
             </button>
           </div>
 
-          {/* Right Controls: Chart Type Toggle */}
-          <div className="flex items-center gap-2 ml-auto">
+          {/* Right Controls: Orientation & Chart Type Toggles */}
+          <div className="flex flex-wrap items-center gap-2 ml-auto">
+            {/* Orientation Toggle */}
             <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 shadow-2xs">
               <button
-                onClick={() => setChartType('points')}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs ${
-                  chartType === 'points'
+                type="button"
+                onClick={() => setChartOrientation('horizontal')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs cursor-pointer ${
+                  chartOrientation === 'horizontal'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
                 }`}
-                title="Gráfica de Puntos"
+                title="Visualización Horizontal (Barras hacia la derecha con nombres legibles en filas)"
               >
-                <CircleDot className="w-3.5 h-3.5" />
-                <span>Puntos</span>
+                <BarChartHorizontal className="w-3.5 h-3.5" />
+                <span>Horizontal</span>
               </button>
               <button
+                type="button"
+                onClick={() => setChartOrientation('vertical')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs cursor-pointer ${
+                  chartOrientation === 'vertical'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+                title="Visualización Vertical (Columnas hacia arriba)"
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                <span>Vertical</span>
+              </button>
+            </div>
+
+            {/* Chart Type Toggle */}
+            <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5 shadow-2xs">
+              <button
+                type="button"
                 onClick={() => setChartType('bars')}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs ${
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs cursor-pointer ${
                   chartType === 'bars'
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
@@ -875,6 +933,19 @@ export const DashboardView: React.FC = () => {
                 <BarChart3 className="w-3.5 h-3.5" />
                 <span>Barras</span>
               </button>
+              <button
+                type="button"
+                onClick={() => setChartType('points')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md font-semibold transition text-xs cursor-pointer ${
+                  chartType === 'points'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+                title="Gráfica de Puntos (Lollipop)"
+              >
+                <CircleDot className="w-3.5 h-3.5" />
+                <span>Puntos</span>
+              </button>
             </div>
           </div>
         </div>
@@ -882,126 +953,243 @@ export const DashboardView: React.FC = () => {
         {/* Counter Summary */}
         <div className="flex items-center justify-between text-xs text-gray-500 px-1">
           <span>
-            Mostrando <strong>{chartData.length}</strong> productos ordenados horizontalmente
+            Mostrando <strong>{displayedChartData.length}</strong> de {chartData.length} productos
+            {chartOrientation === 'horizontal' ? ' en formato horizontal' : ' en columnas'}
             {selectedUp !== 'all' ? ` (Filtrando por UP: ${selectedUp})` : ''}
             {chartAreaFilter !== 'all' ? ` (Área: ${chartAreaFilter})` : ''}
           </span>
           <span className="text-[11px] text-gray-400">
+            {chartOrientation === 'horizontal' && displayedChartData.length > 12 ? 'Desplácese verticalmente para revisar todo el listado • ' : ''}
             Pase el cursor sobre cualquier elemento para ver detalles completos
           </span>
         </div>
 
-        {/* Horizontal Chart Viewport with horizontal scrolling when many products */}
-        <div className="w-full rounded-xl border border-gray-100 bg-white p-2 overflow-x-auto">
-          {chartData.length > 0 ? (
-            <div style={{ minWidth: `${chartMinWidth}px`, height: '420px' }} className="w-full">
+        {/* Chart Viewport: Scrollable vertically in horizontal mode, or horizontally in vertical mode */}
+        <div className={`w-full rounded-xl border border-gray-100 bg-white p-2.5 ${
+          chartOrientation === 'horizontal'
+            ? 'max-h-[580px] overflow-y-auto overflow-x-auto'
+            : 'overflow-x-auto'
+        }`}>
+          {displayedChartData.length > 0 ? (
+            <div
+              style={{
+                minWidth: chartOrientation === 'horizontal' ? '560px' : chartMinWidth,
+                height: `${chartDynamicHeight}px`,
+                width: '100%'
+              }}
+              className="relative"
+            >
               <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart
-                  layout="horizontal"
-                  data={chartData}
-                  margin={{ top: 25, right: 30, left: 10, bottom: 85 }}
-                >
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    horizontal={true}
-                    vertical={false}
-                    stroke="#f1f5f9"
-                  />
+                {chartOrientation === 'horizontal' ? (
+                  /* HORIZONTAL ORIENTATION: Categories on YAxis (left), Numeric quantities on XAxis (bottom) */
+                  <ComposedChart
+                    layout="vertical"
+                    data={displayedChartData}
+                    margin={{ top: 15, right: 35, left: 10, bottom: 20 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      horizontal={true}
+                      vertical={true}
+                      stroke="#f1f5f9"
+                    />
 
-                  {/* Horizontal Axis: Product Names */}
-                  <XAxis
-                    type="category"
-                    dataKey="name"
-                    interval={0}
-                    angle={-28}
-                    textAnchor="end"
-                    height={85}
-                    tick={{ fontSize: 11, fill: '#1e293b', fontWeight: 600 }}
-                  />
+                    {/* Horizontal Axis: Quantities */}
+                    <XAxis
+                      type="number"
+                      domain={[0, 'auto']}
+                      tick={{ fontSize: 11, fill: '#64748b' }}
+                      allowDecimals={false}
+                    />
 
-                  {/* Vertical Axis: Quantities */}
-                  <YAxis
-                    type="number"
-                    tick={{ fontSize: 11, fill: '#64748b' }}
-                    domain={[0, 'auto']}
-                    allowDecimals={false}
-                  />
+                    {/* Vertical Axis: Product Names on the left */}
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      interval={0}
+                      width={200}
+                      tick={{ fontSize: 11, fill: '#1e293b', fontWeight: 600 }}
+                    />
 
-                  <Tooltip
-                    content={<CustomChartTooltip />}
-                    cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
-                  />
+                    <Tooltip
+                      content={<CustomChartTooltip />}
+                      cursor={{ fill: 'rgba(241, 245, 249, 0.7)' }}
+                    />
 
-                  {/* Render based on selected chart type */}
-                  {chartType === 'points' ? (
-                    <>
-                      {/* Vertical lollipop guide stem from 0 to stock */}
-                      <Bar
-                        dataKey="stock"
-                        barSize={3}
-                        fill="#e2e8f0"
-                        isAnimationActive={false}
-                      />
+                    {/* Horizontal Chart Rendering: Points or Bars */}
+                    {chartType === 'points' ? (
+                      <>
+                        {/* Horizontal guide stem from 0 to stock */}
+                        <Bar
+                          dataKey="stock"
+                          barSize={3}
+                          fill="#cbd5e1"
+                          isAnimationActive={false}
+                        />
 
-                      {/* Stock Actual Point (Circle) - Red if alert, Blue if normal */}
-                      <Scatter
-                        dataKey="stock"
-                        name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
-                        shape="circle"
-                      >
-                        {chartData.map((entry, index) => (
-                          <Cell
-                            key={`cell-stock-${index}`}
-                            fill={entry.isAlert ? '#f43f5e' : '#2563eb'}
-                            stroke={entry.isAlert ? '#be123c' : '#1d4ed8'}
-                            strokeWidth={2}
-                            r={6.5}
-                          />
-                        ))}
-                      </Scatter>
+                        {/* Stock Point (Circle) - Red if alert, Blue if normal */}
+                        <Scatter
+                          dataKey="stock"
+                          name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
+                          shape="circle"
+                        >
+                          {displayedChartData.map((entry, index) => (
+                            <Cell
+                              key={`cell-stock-h-${index}`}
+                              fill={entry.isAlert ? '#f43f5e' : '#2563eb'}
+                              stroke={entry.isAlert ? '#be123c' : '#1d4ed8'}
+                              strokeWidth={2}
+                              r={6}
+                            />
+                          ))}
+                        </Scatter>
 
-                      {/* Punto de Reorden Point (Diamond) */}
-                      <Scatter
-                        dataKey="reorden"
-                        name="Punto de Reorden"
-                        shape="diamond"
-                        fill="#f59e0b"
-                      >
-                        {chartData.map((_, index) => (
-                          <Cell
-                            key={`cell-reorder-${index}`}
-                            fill="#f59e0b"
-                            stroke="#b45309"
-                            strokeWidth={2}
-                          />
-                        ))}
-                      </Scatter>
-                    </>
-                  ) : (
-                    <>
-                      {/* Comparative Bars */}
-                      <Bar
-                        dataKey="stock"
-                        name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
-                        radius={[4, 4, 0, 0]}
-                      >
-                        {chartData.map((entry, index) => (
-                          <Cell
-                            key={`cell-bar-${index}`}
-                            fill={entry.isAlert ? '#f43f5e' : '#3b82f6'}
-                          />
-                        ))}
-                      </Bar>
-                      <Bar
-                        dataKey="reorden"
-                        name="Punto de Reorden"
-                        fill="#f59e0b"
-                        radius={[4, 4, 0, 0]}
-                        opacity={0.7}
-                      />
-                    </>
-                  )}
-                </ComposedChart>
+                        {/* Punto de Reorden Point (Diamond) */}
+                        <Scatter
+                          dataKey="reorden"
+                          name="Punto de Reorden"
+                          shape="diamond"
+                          fill="#f59e0b"
+                        >
+                          {displayedChartData.map((_, index) => (
+                            <Cell
+                              key={`cell-reorder-h-${index}`}
+                              fill="#f59e0b"
+                              stroke="#b45309"
+                              strokeWidth={2}
+                            />
+                          ))}
+                        </Scatter>
+                      </>
+                    ) : (
+                      <>
+                        {/* Horizontal Comparative Bars */}
+                        <Bar
+                          dataKey="stock"
+                          name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
+                          radius={[0, 4, 4, 0]}
+                          barSize={14}
+                        >
+                          {displayedChartData.map((entry, index) => (
+                            <Cell
+                              key={`cell-bar-h-${index}`}
+                              fill={entry.isAlert ? '#f43f5e' : '#2563eb'}
+                            />
+                          ))}
+                        </Bar>
+                        <Bar
+                          dataKey="reorden"
+                          name="Punto de Reorden"
+                          fill="#f59e0b"
+                          radius={[0, 4, 4, 0]}
+                          barSize={10}
+                          opacity={0.8}
+                        />
+                      </>
+                    )}
+                  </ComposedChart>
+                ) : (
+                  /* VERTICAL ORIENTATION: Categories on XAxis (bottom), Numeric quantities on YAxis (left) */
+                  <ComposedChart
+                    layout="horizontal"
+                    data={displayedChartData}
+                    margin={{ top: 25, right: 30, left: 10, bottom: 85 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      horizontal={true}
+                      vertical={false}
+                      stroke="#f1f5f9"
+                    />
+
+                    {/* Horizontal Axis: Product Names */}
+                    <XAxis
+                      type="category"
+                      dataKey="name"
+                      interval={0}
+                      angle={-28}
+                      textAnchor="end"
+                      height={85}
+                      tick={{ fontSize: 11, fill: '#1e293b', fontWeight: 600 }}
+                    />
+
+                    {/* Vertical Axis: Quantities */}
+                    <YAxis
+                      type="number"
+                      tick={{ fontSize: 11, fill: '#64748b' }}
+                      domain={[0, 'auto']}
+                      allowDecimals={false}
+                    />
+
+                    <Tooltip
+                      content={<CustomChartTooltip />}
+                      cursor={{ stroke: '#cbd5e1', strokeWidth: 1, strokeDasharray: '4 4' }}
+                    />
+
+                    {chartType === 'points' ? (
+                      <>
+                        <Bar
+                          dataKey="stock"
+                          barSize={3}
+                          fill="#e2e8f0"
+                          isAnimationActive={false}
+                        />
+                        <Scatter
+                          dataKey="stock"
+                          name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
+                          shape="circle"
+                        >
+                          {displayedChartData.map((entry, index) => (
+                            <Cell
+                              key={`cell-stock-v-${index}`}
+                              fill={entry.isAlert ? '#f43f5e' : '#2563eb'}
+                              stroke={entry.isAlert ? '#be123c' : '#1d4ed8'}
+                              strokeWidth={2}
+                              r={6.5}
+                            />
+                          ))}
+                        </Scatter>
+                        <Scatter
+                          dataKey="reorden"
+                          name="Punto de Reorden"
+                          shape="diamond"
+                          fill="#f59e0b"
+                        >
+                          {displayedChartData.map((_, index) => (
+                            <Cell
+                              key={`cell-reorder-v-${index}`}
+                              fill="#f59e0b"
+                              stroke="#b45309"
+                              strokeWidth={2}
+                            />
+                          ))}
+                        </Scatter>
+                      </>
+                    ) : (
+                      <>
+                        <Bar
+                          dataKey="stock"
+                          name={selectedUp === 'all' ? 'Stock Total' : `Stock en ${selectedUp}`}
+                          radius={[4, 4, 0, 0]}
+                        >
+                          {displayedChartData.map((entry, index) => (
+                            <Cell
+                              key={`cell-bar-v-${index}`}
+                              fill={entry.isAlert ? '#f43f5e' : '#3b82f6'}
+                            />
+                          ))}
+                        </Bar>
+                        <Bar
+                          dataKey="reorden"
+                          name="Punto de Reorden"
+                          fill="#f59e0b"
+                          radius={[4, 4, 0, 0]}
+                          opacity={0.7}
+                        />
+                      </>
+                    )}
+                  </ComposedChart>
+                )}
               </ResponsiveContainer>
             </div>
           ) : (

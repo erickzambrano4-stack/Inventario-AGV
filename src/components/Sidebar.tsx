@@ -16,7 +16,8 @@ import {
   X,
   BookOpen,
   ClipboardList,
-  UserCheck
+  UserCheck,
+  RotateCw
 } from 'lucide-react';
 import { ConfigModal } from './ConfigModal';
 
@@ -28,7 +29,10 @@ export const Sidebar: React.FC = () => {
     logout,
     appSettings,
     cloudConnected,
-    syncStatusText
+    syncStatusText,
+    isSyncing,
+    forceCloudSync,
+    lastSyncTime
   } = useInventory();
 
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -287,20 +291,44 @@ export const Sidebar: React.FC = () => {
           )}
         </nav>
 
-        {/* Cloud Connection Badge */}
-        <div className="px-4 py-2 border-t border-slate-800/80 bg-slate-950/40">
-          <div
-            onClick={() => setIsConfigOpen(true)}
-            className="cursor-pointer group flex items-center justify-between text-[11px] text-slate-400 py-1"
-            title={syncStatusText}
-          >
-            <div className="flex items-center gap-1.5 truncate">
-              <Cloud className={`w-3.5 h-3.5 shrink-0 ${cloudConnected ? 'text-emerald-400' : 'text-amber-400'}`} />
-              <span className="truncate group-hover:text-slate-200">Firebase (Producción)</span>
+        {/* Cloud Connection & Multi-device Sync Badge */}
+        <div className="px-3.5 py-2.5 border-t border-slate-800/80 bg-slate-950/50">
+          <div className="flex items-center justify-between text-[11px] text-slate-400">
+            <div
+              onClick={() => setIsConfigOpen(true)}
+              className="cursor-pointer group flex items-center gap-1.5 truncate flex-1"
+              title={`${syncStatusText} • Cualquier cambio se refleja al instante en todos los equipos.`}
+            >
+              <div className="relative">
+                <Cloud className={`w-3.5 h-3.5 shrink-0 ${cloudConnected ? 'text-emerald-400' : 'text-amber-400'}`} />
+                {cloudConnected && (
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping opacity-75"></span>
+                )}
+              </div>
+              <div className="truncate">
+                <div className="font-semibold text-slate-300 group-hover:text-white flex items-center gap-1 truncate text-[11px]">
+                  <span>En vivo en la nube</span>
+                </div>
+                <div className="text-[10px] text-slate-500 truncate">
+                  {lastSyncTime ? `Sinc: ${lastSyncTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'Sincronizado'}
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] uppercase font-bold text-emerald-400 bg-emerald-950/60 px-1 py-0.2 rounded border border-emerald-800/50">PROD</span>
-              <span className={`w-2 h-2 rounded-full shrink-0 ${cloudConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`}></span>
+
+            <div className="flex items-center gap-1.5 shrink-0 ml-1">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  forceCloudSync();
+                }}
+                disabled={isSyncing}
+                title="Sincronizar ahora con la nube"
+                className="p-1 rounded-md text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition disabled:opacity-50"
+              >
+                <RotateCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-emerald-400' : ''}`} />
+              </button>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${cloudConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400 animate-pulse'}`}></span>
             </div>
           </div>
         </div>

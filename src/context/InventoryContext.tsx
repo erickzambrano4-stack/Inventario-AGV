@@ -21,7 +21,8 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
-  getDocs
+  getDocs,
+  getDoc
 } from 'firebase/firestore';
 import { hashPassword, verifyPassword } from '../lib/security';
 
@@ -63,6 +64,7 @@ interface InventoryContextType {
   cloudConnected: boolean;
   syncStatusText: string;
   isSyncing: boolean;
+  lastSyncTime: Date | null;
   toasts: ToastMessage[];
   showToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
@@ -280,6 +282,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [cloudConnected, setCloudConnected] = useState<boolean>(false);
   const [syncStatusText, setSyncStatusText] = useState<string>('Conectando a Firebase...');
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(() => new Date());
 
   const showToast = useCallback((text: string, type: ToastMessage['type'] = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -382,21 +385,30 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             const remoteItems: Item[] = [];
             snapshot.forEach(docSnap => {
               const data = docSnap.data() as Item;
-              remoteItems.push({ ...data, id: docSnap.id });
+              remoteItems.push({
+                id: docSnap.id,
+                desc: data.desc || '',
+                unidad: data.unidad || 'PZ',
+                area: data.area || 'GENERAL',
+                reorden: typeof data.reorden === 'number' ? data.reorden : 0
+              });
             });
+            remoteItems.sort((a, b) => a.id.localeCompare(b.id));
             setItems(remoteItems);
+            localStorage.setItem('invItems_Pro', JSON.stringify(remoteItems));
           } else {
             // If remote is empty, seed with initial items
             DEFAULT_ITEMS.forEach(async it => {
               try {
                 if (db) await setDoc(doc(db, 'items', it.id), it);
               } catch (e) {
-                // Ignore seed errors if rules block it
+                // Ignore seed errors
               }
             });
           }
           setCloudConnected(true);
-          setSyncStatusText(`Conectado a Firebase: ${firebaseConfig.projectId}`);
+          setLastSyncTime(new Date());
+          setSyncStatusText(`Conectado a Firebase Cloud (${firebaseConfig.projectId})`);
         },
         error => {
           console.warn("Firestore items listener notice:", error.message);
@@ -412,11 +424,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           const remoteTrans: Transaccion[] = [];
           snapshot.forEach(docSnap => {
             const data = docSnap.data() as Transaccion;
-            remoteTrans.push({ ...data, idDoc: docSnap.id });
+            remoteTrans.push({
+              ...data,
+              idDoc: docSnap.id
+            });
           });
-          if (remoteTrans.length > 0 || snapshot.metadata.fromCache === false) {
-            setTransacciones(remoteTrans);
-          }
+          // Sort by timestamp descending so all devices see the newest transactions
+          remoteTrans.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          setTransacciones(remoteTrans);
+          localStorage.setItem('invTrans_Pro', JSON.stringify(remoteTrans));
+          setLastSyncTime(new Date());
         },
         error => {
           console.warn("Firestore transacciones listener notice:", error.message);
@@ -431,9 +448,34 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             const remoteUsers: Usuario[] = [];
             snapshot.forEach(docSnap => {
               const data = docSnap.data() as Usuario;
-              remoteUsers.push({ ...data, username: docSnap.id });
+              remoteUsers.push({
+                username: docSnap.id,
+                name: data.name || docSnap.id,
+                role: (data.role as string) === 'operador' ? 'supervisor' : data.role,
+                up: data.up || 'LUPITA',
+                allowedUps: data.allowedUps || (data.up === 'ALL' ? ['ALL'] : [data.up]),
+                password: data.password
+              });
             });
             setUsuarios(remoteUsers);
+            localStorage.setItem('invUsers_Pro', JSON.stringify(remoteUsers));
+
+            // Keep active session aligned if user's role or assigned UPs changed from another device
+            setCurrentUser(prev => {
+              if (!prev) return null;
+              const match = remoteUsers.find(u => u.username.toLowerCase() === prev.username.toLowerCase());
+              if (!match) return prev;
+              const merged: Usuario = {
+                ...prev,
+                name: match.name,
+                role: match.role,
+                up: match.up,
+                allowedUps: match.allowedUps
+              };
+              localStorage.setItem('inv_current_user', JSON.stringify(merged));
+              return merged;
+            });
+            setLastSyncTime(new Date());
           }
         },
         error => {
@@ -448,6 +490,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (docSnap.exists()) {
             const data = docSnap.data() as AppSettings;
             setAppSettings(prev => ({ ...prev, ...data }));
+            setLastSyncTime(new Date());
           }
         },
         error => {
@@ -462,12 +505,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           if (docSnap.exists()) {
             const data = docSnap.data();
             if (Array.isArray(data?.ups) && data.ups.length > 0) {
-              setUps(prev => {
-                const combined = Array.from(
-                  new Set([...INITIAL_UPS, ...prev, ...data.ups.map((u: string) => String(u).trim().toUpperCase())])
-                );
-                return combined;
-              });
+              const cleanUps = data.ups.map((u: string) => String(u).trim().toUpperCase());
+              setUps(cleanUps);
+              localStorage.setItem('invUps_Pro', JSON.stringify(cleanUps));
+              setLastSyncTime(new Date());
             }
           }
         },
@@ -482,11 +523,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         snapshot => {
           const remoteDocs: SolicitudInsumo[] = [];
           snapshot.forEach(docSnap => {
-            remoteDocs.push(docSnap.data() as SolicitudInsumo);
+            remoteDocs.push({
+              ...(docSnap.data() as SolicitudInsumo),
+              id: docSnap.id
+            });
           });
-          if (remoteDocs.length > 0) {
-            setSolicitudes(remoteDocs.sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0)));
-          }
+          remoteDocs.sort((a, b) => (b.fechaCreacion || 0) - (a.fechaCreacion || 0));
+          setSolicitudes(remoteDocs);
+          localStorage.setItem('invSolicitudes_Pro', JSON.stringify(remoteDocs));
+          setLastSyncTime(new Date());
         },
         error => {
           console.warn("Firestore solicitudes listener notice:", error.message);
@@ -499,8 +544,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         docSnap => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            if (Array.isArray(data?.responsables) && data.responsables.length > 0) {
+            if (Array.isArray(data?.responsables)) {
               setResponsables(data.responsables);
+              localStorage.setItem('invResponsables_Pro', JSON.stringify(data.responsables));
+              setLastSyncTime(new Date());
             }
           }
         },
@@ -539,6 +586,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       for (const trans of transacciones) {
         await setDoc(doc(db, 'transacciones', trans.idDoc), trans, { merge: true });
       }
+      // Sync users
+      for (const u of usuarios) {
+        await setDoc(doc(db, 'usuarios', u.username), u, { merge: true });
+      }
       // Sync settings & locations
       await setDoc(doc(db, 'configuracion', 'general'), appSettings, { merge: true });
       await setDoc(doc(db, 'configuracion', 'locations'), { ups }, { merge: true });
@@ -547,14 +598,15 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         await setDoc(doc(db, 'solicitudes', sol.id), sol, { merge: true });
       }
       setCloudConnected(true);
-      setSyncStatusText('Conectado a Firebase: inventarios-subacopios');
-      showToast('Sincronización completa con Firebase Cloud exitosa', 'success');
+      setLastSyncTime(new Date());
+      setSyncStatusText(`Conectado a Firebase Cloud (${firebaseConfig.projectId})`);
+      showToast('Sincronización completa con Firebase Cloud exitosa en todos los equipos', 'success');
     } catch (e: any) {
       showToast('Error de sincronización con la nube: ' + (e?.message || 'Permisos'), 'error');
     } finally {
       setIsSyncing(false);
     }
-  }, [items, transacciones, appSettings, ups, responsables, solicitudes, showToast]);
+  }, [items, transacciones, usuarios, appSettings, ups, responsables, solicitudes, showToast]);
 
   // Inventory calculation
   const inventario = useMemo<InventarioItem[]>(() => {
@@ -601,7 +653,28 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Login handler
   const login = async (user: string, pass: string): Promise<{ success: boolean; message: string }> => {
     const username = user.trim().toLowerCase();
-    const candidate = usuarios.find(u => u.username.toLowerCase() === username);
+    let candidate = usuarios.find(u => u.username.toLowerCase() === username);
+
+    // If candidate not found in memory (e.g. initial connection on a new device), check Firestore directly
+    if (!candidate && db) {
+      try {
+        const userDoc = await getDoc(doc(db, 'usuarios', username));
+        if (userDoc.exists()) {
+          const data = userDoc.data() as Usuario;
+          candidate = {
+            username: userDoc.id,
+            name: data.name || userDoc.id,
+            role: (data.role as string) === 'operador' ? 'supervisor' : data.role,
+            up: data.up || 'LUPITA',
+            allowedUps: data.allowedUps || (data.up === 'ALL' ? ['ALL'] : [data.up]),
+            password: data.password
+          };
+          setUsuarios(prev => [...prev.filter(u => u.username.toLowerCase() !== username), candidate!]);
+        }
+      } catch (e) {
+        // Fallback
+      }
+    }
 
     if (!candidate) {
       return { success: false, message: 'Usuario no encontrado' };
@@ -616,7 +689,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (candidate.password && !candidate.password.startsWith('sha256:')) {
       const hashed = await hashPassword(pass);
       candidate.password = hashed;
-      setUsuarios([...usuarios]);
+      setUsuarios(prev => prev.map(u => u.username.toLowerCase() === candidate!.username.toLowerCase() ? candidate! : u));
       if (db) {
         try {
           await setDoc(doc(db, 'usuarios', candidate.username), candidate, { merge: true });
@@ -655,7 +728,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       id,
       desc: itemData.desc.trim().toUpperCase(),
       unidad: 'PZ',
-      area: itemData.area.trim().toUpperCase() || 'GENERAL',
+      area: itemData.area ? itemData.area.trim().toUpperCase() : 'GENERAL',
       reorden: Math.max(0, itemData.reorden || 0)
     };
 
@@ -664,46 +737,44 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'items', newItem.id), newItem);
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore item write notice:", err.message);
+        handleFirestoreError(err, OperationType.CREATE, `items/${newItem.id}`);
       }
     }
 
-    showToast(`Producto ${newItem.id} agregado al catálogo`, 'success');
+    showToast(`Producto ${newItem.id} guardado y sincronizado`, 'success');
     return true;
   };
 
   // Update Item
   const updateItem = async (id: string, updates: Partial<Omit<Item, 'id'>>): Promise<boolean> => {
-    setItems(prev =>
-      prev.map(i => {
-        if (i.id === id) {
-          return {
-            ...i,
-            desc: updates.desc !== undefined ? updates.desc.trim().toUpperCase() : i.desc,
-            area: updates.area !== undefined ? updates.area.trim().toUpperCase() : i.area,
-            reorden: updates.reorden !== undefined ? Math.max(0, updates.reorden) : i.reorden
-          };
-        }
-        return i;
-      })
-    );
+    const existing = items.find(i => i.id === id);
+    if (!existing) {
+      showToast('Producto no encontrado', 'error');
+      return false;
+    }
+
+    const updatedItem: Item = {
+      id,
+      desc: updates.desc !== undefined ? updates.desc.trim().toUpperCase() : existing.desc,
+      unidad: updates.unidad !== undefined ? updates.unidad.trim().toUpperCase() : (existing.unidad || 'PZ'),
+      area: updates.area !== undefined ? updates.area.trim().toUpperCase() : existing.area,
+      reorden: updates.reorden !== undefined ? Math.max(0, updates.reorden) : existing.reorden
+    };
+
+    setItems(prev => prev.map(i => (i.id === id ? updatedItem : i)));
 
     if (db) {
       try {
-        const updated = items.find(i => i.id === id);
-        if (updated) {
-          await setDoc(doc(db, 'items', id), {
-            ...updated,
-            ...updates
-          }, { merge: true });
-        }
+        await setDoc(doc(db, 'items', id), updatedItem);
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore update item notice:", err.message);
+        handleFirestoreError(err, OperationType.UPDATE, `items/${id}`);
       }
     }
 
-    showToast(`Producto ${id} actualizado correctamente`, 'success');
+    showToast(`Producto ${id} actualizado y sincronizado en todos los equipos`, 'success');
     return true;
   };
 
@@ -720,12 +791,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await deleteDoc(doc(db, 'items', id));
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore delete item notice:", err.message);
+        handleFirestoreError(err, OperationType.DELETE, `items/${id}`);
       }
     }
 
-    showToast(`Producto ${id} eliminado del catálogo`, 'success');
+    showToast(`Producto ${id} eliminado y sincronizado`, 'success');
     return true;
   };
 
@@ -752,8 +824,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (db) {
         try {
           await Promise.all(toDelete.map(id => deleteDoc(doc(db, 'items', id))));
+          setLastSyncTime(new Date());
         } catch (err: any) {
-          console.warn("Firestore delete multiple items notice:", err.message);
+          handleFirestoreError(err, OperationType.DELETE, 'items');
         }
       }
     }
@@ -914,8 +987,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'transacciones', idDoc), newTrans);
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore transaction write notice:", err.message);
+        handleFirestoreError(err, OperationType.CREATE, `transacciones/${idDoc}`);
       }
     }
 
@@ -930,8 +1004,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await deleteDoc(doc(db, 'transacciones', idDoc));
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore delete transaction notice:", err.message);
+        handleFirestoreError(err, OperationType.DELETE, `transacciones/${idDoc}`);
       }
     }
 
@@ -949,8 +1024,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await Promise.all(idDocs.map(idDoc => deleteDoc(doc(db, 'transacciones', idDoc))));
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore delete multiple transactions notice:", err.message);
+        handleFirestoreError(err, OperationType.DELETE, 'transacciones');
       }
     }
 
@@ -981,8 +1057,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'usuarios', newUser.username), newUser);
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore add user notice:", err.message);
+        handleFirestoreError(err, OperationType.CREATE, `usuarios/${newUser.username}`);
       }
     }
 
@@ -1055,8 +1132,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'usuarios', targetUser.username), updatedUser, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore update user notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, `usuarios/${targetUser.username}`);
       }
     }
 
@@ -1088,8 +1166,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await deleteDoc(doc(db, 'usuarios', username));
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore delete user notice:", err.message);
+        handleFirestoreError(err, OperationType.DELETE, `usuarios/${username}`);
       }
     }
 
@@ -1127,8 +1206,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'locations'), { ups: updated }, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore add UP notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/locations');
       }
     }
 
@@ -1165,8 +1245,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'locations'), { ups: updated }, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore delete UP notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/locations');
       }
     }
 
@@ -1180,8 +1261,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'general'), newSettings, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn("Firestore update settings notice:", err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/general');
       }
     }
     showToast('Configuración del sistema guardada', 'success');
@@ -1216,8 +1298,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore add responsable notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
       }
     }
 
@@ -1239,8 +1322,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore update responsable notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
       }
     }
 
@@ -1277,8 +1361,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore delete responsable notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
       }
     }
 
@@ -1366,8 +1451,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'solicitudes', newId), newSolicitud, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore add solicitud notice:', err.message);
+        handleFirestoreError(err, OperationType.CREATE, `solicitudes/${newId}`);
       }
     }
 
@@ -1408,8 +1494,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await setDoc(doc(db, 'solicitudes', id), updatedSolicitud, { merge: true });
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore update solicitud notice:', err.message);
+        handleFirestoreError(err, OperationType.UPDATE, `solicitudes/${id}`);
       }
     }
 
@@ -1476,8 +1563,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (db) {
       try {
         await deleteDoc(doc(db, 'solicitudes', id));
+        setLastSyncTime(new Date());
       } catch (err: any) {
-        console.warn('Firestore delete solicitud notice:', err.message);
+        handleFirestoreError(err, OperationType.DELETE, `solicitudes/${id}`);
       }
     }
 
@@ -1504,6 +1592,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         cloudConnected,
         syncStatusText,
         isSyncing,
+        lastSyncTime,
         toasts,
         showToast,
         dismissToast,
