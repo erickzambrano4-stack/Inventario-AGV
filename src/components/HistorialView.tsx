@@ -26,6 +26,7 @@ export const HistorialView: React.FC = () => {
   const {
     transacciones,
     items,
+    usuarios,
     currentUser,
     ups,
     userAllowedUps,
@@ -41,11 +42,22 @@ export const HistorialView: React.FC = () => {
   const [upFilter, setUpFilter] = useState<string>(() => {
     return isGlobalAccess ? 'todos' : primaryUp;
   });
+  const [userFilter, setUserFilter] = useState<string>(() => {
+    if (currentUser?.role === 'supervisor') {
+      return currentUser.username;
+    }
+    return 'todos';
+  });
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(25);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  // Set of valid application usernames currently using the application
+  const validAppUsernames = useMemo(() => {
+    return new Set(usuarios.map(u => u.username.toLowerCase()));
+  }, [usuarios]);
 
   // Sync upFilter if permissions change
   React.useEffect(() => {
@@ -74,11 +86,17 @@ export const HistorialView: React.FC = () => {
     return Array.from(upsSet);
   }, [ups, transacciones, isGlobalAccess, userAllowedUps]);
 
-  // Base authorized transactions for counts and filtering
+  // Base authorized transactions - restricted to registered users using the application
   const authorizedTransactions = useMemo(() => {
-    if (isGlobalAccess) return transacciones;
-    return transacciones.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
-  }, [transacciones, isGlobalAccess, userAllowedUps]);
+    const appTransactions = transacciones.filter(t => {
+      const u = (t.usuario || '').trim().toLowerCase();
+      // Only include transactions made by users registered/using the application
+      return validAppUsernames.has(u) || u === 'admin' || (currentUser && u === currentUser.username.toLowerCase());
+    });
+
+    if (isGlobalAccess) return appTransactions;
+    return appTransactions.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
+  }, [transacciones, isGlobalAccess, userAllowedUps, validAppUsernames, currentUser]);
 
   // Filtered transactions
   const filtered = useMemo(() => {
@@ -87,6 +105,13 @@ export const HistorialView: React.FC = () => {
       const matchUp = (upFilter === 'todos' && isGlobalAccess)
         ? true
         : t.up.trim().toUpperCase() === upFilter.trim().toUpperCase();
+
+      const matchUser = userFilter === 'todos'
+        ? true
+        : userFilter === 'mine'
+        ? (currentUser && t.usuario.toLowerCase() === currentUser.username.toLowerCase())
+        : t.usuario.toLowerCase() === userFilter.toLowerCase();
+
       const itemObj = items.find(i => i.id === t.itemId);
       const desc = itemObj ? itemObj.desc.toLowerCase() : '';
 
@@ -97,9 +122,9 @@ export const HistorialView: React.FC = () => {
         t.usuario.toLowerCase().includes(search.toLowerCase()) ||
         (t.notas && t.notas.toLowerCase().includes(search.toLowerCase()));
 
-      return matchType && matchUp && matchSearch;
+      return matchType && matchUp && matchUser && matchSearch;
     });
-  }, [authorizedTransactions, typeFilter, upFilter, search, items, isGlobalAccess]);
+  }, [authorizedTransactions, typeFilter, upFilter, userFilter, currentUser, search, items, isGlobalAccess]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageItems = useMemo(() => {
@@ -391,6 +416,46 @@ export const HistorialView: React.FC = () => {
               <span>UP: {availableUps[0] || primaryUp}</span>
             </div>
           )}
+          {/* User Filter Dropdown */}
+          <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
+            <User className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+            <span className="font-semibold text-gray-500">Usuario:</span>
+            <select
+              value={userFilter}
+              onChange={e => {
+                setUserFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[150px] truncate"
+              title="Filtrar por usuario que esté utilizando la aplicación"
+            >
+              <option value="todos">Todos los usuarios ({usuarios.length})</option>
+              {currentUser && (
+                <option value={currentUser.username}>
+                  Mi usuario ({currentUser.name})
+                </option>
+              )}
+              {usuarios.map(u => (
+                <option key={u.username} value={u.username}>
+                  {u.name} ({u.role.toUpperCase()} - {u.up})
+                </option>
+              ))}
+            </select>
+            {userFilter !== 'todos' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setUserFilter('todos');
+                  setCurrentPage(1);
+                }}
+                className="text-gray-400 hover:text-rose-600 ml-1 p-0.5 cursor-pointer"
+                title="Limpiar filtro de usuario"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
           {/* Lines / Page size selector */}
           <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
             <span className="font-semibold text-gray-500">Ver:</span>
@@ -544,9 +609,21 @@ export const HistorialView: React.FC = () => {
                       </td>
 
                       <td className="px-4 py-4 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-xs font-medium">
-                          <User className="w-3 h-3 text-slate-400" /> {row.usuario}
-                        </span>
+                        {(() => {
+                          const userObj = usuarios.find(u => u.username.toLowerCase() === row.usuario.toLowerCase());
+                          const isCurrent = currentUser?.username.toLowerCase() === row.usuario.toLowerCase();
+                          return (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-100/90 border border-slate-200/70 text-slate-800 text-xs font-semibold">
+                              <User className="w-3 h-3 text-blue-600" />
+                              <span title={`Usuario: ${row.usuario}`}>{userObj ? userObj.name : row.usuario}</span>
+                              {isCurrent && (
+                                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black bg-blue-200 text-blue-900">
+                                  Tú
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       <td className="px-4 py-4 whitespace-nowrap">

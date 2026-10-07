@@ -26,12 +26,31 @@ export const ItemsView: React.FC = () => {
     items,
     inventario,
     ups,
+    currentUser,
+    isGlobalAccess,
+    primaryUp,
+    userAllowedUps,
     addItem,
     updateItem,
     deleteItem,
     deleteMultipleItems,
     showToast
   } = useInventory();
+
+  // UP Filter for database items
+  const [stockUpFilter, setStockUpFilter] = useState<string>(() => {
+    return isGlobalAccess ? 'ALL' : primaryUp;
+  });
+  const [onlyStockInUp, setOnlyStockInUp] = useState<boolean>(false);
+
+  // Sync stockUpFilter if permissions update
+  React.useEffect(() => {
+    if (!isGlobalAccess) {
+      if (stockUpFilter === 'ALL' || !userAllowedUps.includes(stockUpFilter.toUpperCase())) {
+        setStockUpFilter(primaryUp);
+      }
+    }
+  }, [isGlobalAccess, userAllowedUps, primaryUp, stockUpFilter]);
 
   // Master Document import modal state
   const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
@@ -98,6 +117,15 @@ export const ItemsView: React.FC = () => {
         }
       }
 
+      // Filter by stock in UP/sede of active user
+      if (onlyStockInUp) {
+        const inv = inventario.find(inv => inv.id === i.id);
+        const stock = stockUpFilter === 'ALL'
+          ? (inv?.stockTotal || 0)
+          : (inv?.upStock[stockUpFilter] || 0);
+        if (stock <= 0) return false;
+      }
+
       if (search.trim()) {
         const q = search.toLowerCase();
         const matchId = i.id.toLowerCase().includes(q);
@@ -108,7 +136,7 @@ export const ItemsView: React.FC = () => {
 
       return true;
     });
-  }, [items, search, selectedArea]);
+  }, [items, inventario, search, selectedArea, stockUpFilter, onlyStockInUp]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const pageItems = useMemo(() => {
@@ -439,6 +467,43 @@ export const ItemsView: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
+            {/* UP Filter */}
+            <div className="flex items-center gap-1.5 bg-white border border-gray-200 px-3 py-1.5 rounded-xl text-xs shadow-2xs">
+              <span className="font-semibold text-gray-500">Sede:</span>
+              <select
+                value={stockUpFilter}
+                onChange={e => {
+                  setStockUpFilter(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer"
+              >
+                {isGlobalAccess && <option value="ALL">Todas las UPs</option>}
+                {(isGlobalAccess ? ups : userAllowedUps).map(u => (
+                  <option key={u} value={u}>
+                    UP {u}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Only Stock Filter Toggle */}
+            <button
+              type="button"
+              onClick={() => {
+                setOnlyStockInUp(!onlyStockInUp);
+                setCurrentPage(1);
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition border cursor-pointer ${
+                onlyStockInUp
+                  ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-slate-50'
+              }`}
+              title="Filtrar productos con existencias en la sede seleccionada"
+            >
+              {onlyStockInUp ? '✓ Con existencias' : 'Solo con existencias'}
+            </button>
+
             {/* Area Filter Selector */}
             <div className="flex items-center gap-1.5 bg-white border border-gray-200 px-3 py-1.5 rounded-xl text-xs shadow-2xs">
               <Filter className="w-3.5 h-3.5 text-blue-600 shrink-0" />
@@ -527,6 +592,9 @@ export const ItemsView: React.FC = () => {
                 <th className="px-6 py-3.5 min-w-[140px]">Código ID</th>
                 <th className="px-6 py-3.5 min-w-[240px]">Descripción</th>
                 <th className="px-6 py-3.5">Área</th>
+                <th className="px-6 py-3.5 text-center min-w-[130px]">
+                  Existencias {stockUpFilter === 'ALL' ? '(Global)' : `(${stockUpFilter})`}
+                </th>
                 <th className="px-6 py-3.5 text-center">Punto de Reorden</th>
                 <th className="px-6 py-3.5 text-center">Acciones</th>
               </tr>
@@ -535,6 +603,12 @@ export const ItemsView: React.FC = () => {
               {pageItems.length > 0 ? (
                 pageItems.map(item => {
                   const isSelected = selectedIds.has(item.id);
+                  const inv = inventario.find(i => i.id.trim().toUpperCase() === item.id.trim().toUpperCase());
+                  const currentStockInScope = stockUpFilter === 'ALL'
+                    ? (inv?.stockTotal ?? 0)
+                    : (inv?.upStock[stockUpFilter] ?? 0);
+                  const totalAll = inv?.stockTotal ?? 0;
+
                   return (
                     <tr
                       key={item.id}
@@ -559,6 +633,23 @@ export const ItemsView: React.FC = () => {
                         <span className="px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-xs font-semibold border border-blue-100">
                           {item.area || 'GENERAL'}
                         </span>
+                      </td>
+
+                      <td className="px-6 py-4 text-center">
+                        <div className="inline-flex flex-col items-center">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-black ${
+                            currentStockInScope > 0
+                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                              : 'bg-gray-100 text-gray-500 border border-gray-200'
+                          }`}>
+                            {currentStockInScope.toLocaleString()} {item.unidad || 'PZ'}
+                          </span>
+                          {stockUpFilter !== 'ALL' && (
+                            <span className="text-[10px] text-gray-400 font-semibold mt-0.5">
+                              Total: {totalAll.toLocaleString()}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="px-6 py-4 text-center font-bold text-amber-700">
@@ -589,7 +680,7 @@ export const ItemsView: React.FC = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="p-10 text-center text-gray-400 text-sm">
+                  <td colSpan={7} className="p-10 text-center text-gray-400 text-sm">
                     No se encontraron productos en el catálogo.
                   </td>
                 </tr>

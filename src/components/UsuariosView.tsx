@@ -349,11 +349,16 @@ export const UsuariosView: React.FC = () => {
                   return (
                     <tr key={user.username} className="hover:bg-slate-50/60 transition">
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-bold text-gray-900 lowercase">{user.username}</span>
-                          {isCurrent && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
-                              TÚ
+                          {isCurrent ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 inline-flex items-center gap-1 shadow-2xs">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                              EN LÍNEA (TÚ)
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium text-gray-500 bg-slate-100">
+                              Activo
                             </span>
                           )}
                         </div>

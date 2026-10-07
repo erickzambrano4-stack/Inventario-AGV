@@ -238,7 +238,8 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     (upName: string) => {
       if (!upName) return false;
       if (isGlobalAccess) return true;
-      return userAllowedUps.includes(upName.trim().toUpperCase());
+      const cleanTarget = upName.trim().toUpperCase().replace(/^UP\s+/, '');
+      return userAllowedUps.some(u => u.trim().toUpperCase().replace(/^UP\s+/, '') === cleanTarget);
     },
     [isGlobalAccess, userAllowedUps]
   );
@@ -618,17 +619,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       let totalEntradas = 0;
       let totalSalidas = 0;
+      const cleanItemId = item.id.trim().toUpperCase();
 
       transacciones.forEach(t => {
-        if (t.itemId === item.id) {
+        const tItemId = (t.itemId || '').trim().toUpperCase();
+        if (tItemId === cleanItemId) {
+          const tUpClean = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '');
+          const matchedUpKey = ups.find(u => u.trim().toUpperCase().replace(/^UP\s+/, '') === tUpClean) || t.up;
+
           if (t.tipo === 'entrada') {
             totalEntradas += t.qty;
-            if (upStock[t.up] !== undefined) upStock[t.up] += t.qty;
-            else upStock[t.up] = (upStock[t.up] || 0) + t.qty;
+            if (upStock[matchedUpKey] !== undefined) upStock[matchedUpKey] += t.qty;
+            else upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) + t.qty;
           } else if (t.tipo === 'salida') {
             totalSalidas += t.qty;
-            if (upStock[t.up] !== undefined) upStock[t.up] -= t.qty;
-            else upStock[t.up] = (upStock[t.up] || 0) - t.qty;
+            if (upStock[matchedUpKey] !== undefined) upStock[matchedUpKey] -= t.qty;
+            else upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) - t.qty;
           }
         }
       });
@@ -639,7 +645,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         upStock
       };
     });
-  }, [items, transacciones]);
+  }, [items, transacciones, ups]);
 
   // Dashboard quick stats
   const stats = useMemo(() => {
@@ -1371,7 +1377,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return true;
   };
 
-  // Add Solicitud de Insumos (solo ingresa a inventario si el estatus es Aprobada / Ingresada)
+  // Add Solicitud de Insumos (agrega al inventario cuando se ingresa / aprueba)
   const addSolicitud = async (
     data: Omit<SolicitudInsumo, 'id' | 'folio' | 'fechaCreacion'>,
     afectarInventario: boolean = true,
@@ -1379,7 +1385,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   ): Promise<SolicitudInsumo | null> => {
     if (!currentUser) return null;
 
-    const upClean = (data.up || primaryUp).trim().toUpperCase();
+    const upClean = (data.up || primaryUp).trim().toUpperCase().replace(/^UP\s+/, '');
     if (!isGlobalAccess && !isUpAuthorized(upClean)) {
       showToast(`No tienes permisos para emitir solicitudes en la UP ${upClean}`, 'error');
       return null;
@@ -1399,35 +1405,73 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const newId = 'doc-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
 
-    // Strict Rule: Only enter into inventory if status is 'aprobada' or 'entregada'
+    // Rule: Apply to inventory if status is 'aprobada' or 'entregada', or if afectarInventario is true
     const isApprovedOrIngresada = data.estado === 'aprobada' || data.estado === 'entregada';
     const shouldApplyStock = isApprovedOrIngresada && (afectarInventario !== false);
 
     // 1. Ensure all requested items exist in master catalog IF applying to inventory
     if (shouldApplyStock) {
+      const newCatalogItems: Item[] = [];
+      const currentItems = [...items];
+
       for (const line of data.items) {
         const cleanItemId = line.itemId.trim().toUpperCase();
-        const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
+        const exists = currentItems.some(i => i.id.trim().toUpperCase() === cleanItemId) ||
+                       newCatalogItems.some(i => i.id.trim().toUpperCase() === cleanItemId);
         if (!exists) {
-          await addItem({
+          const newItem: Item = {
             id: cleanItemId,
-            desc: line.desc.trim(),
-            area: line.area || 'GENERAL',
+            desc: (line.desc || cleanItemId).trim().toUpperCase(),
+            unidad: line.unidad || 'PZ',
+            area: line.area ? line.area.trim().toUpperCase() : 'GENERAL',
             reorden: 0
+          };
+          newCatalogItems.push(newItem);
+        }
+      }
+
+      if (newCatalogItems.length > 0) {
+        const updatedItems = [...items, ...newCatalogItems];
+        setItems(updatedItems);
+        localStorage.setItem('invItems_Pro', JSON.stringify(updatedItems));
+        if (db) {
+          newCatalogItems.forEach(async it => {
+            try {
+              await setDoc(doc(db, 'items', it.id), it);
+            } catch (err) {
+              console.warn("Firestore item notice:", err);
+            }
           });
         }
       }
 
-      // 2. Automatically register 'entrada' movement for each item to increase UP stock
-      for (const item of data.items) {
-        const cleanItemId = item.itemId.trim().toUpperCase();
-        await addTransaction({
+      // 2. Automatically register 'entrada' movements to increase UP stock in batch
+      const newTransList: Transaccion[] = data.items.map((item, idx) => {
+        const idDoc = Date.now().toString(36) + '-' + idx + '-' + Math.random().toString(36).substring(2, 6);
+        return {
+          idDoc,
           tipo: tipoMovimiento,
-          itemId: cleanItemId,
+          itemId: item.itemId.trim().toUpperCase(),
           qty: Number(item.cantidad) || 0,
           up: upClean,
           fecha: data.fecha || new Date().toISOString().split('T')[0],
-          notas: `Solicitud de Insumos Aprobada ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`
+          notas: `Ingreso Solicitud ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`,
+          usuario: currentUser.username,
+          timestamp: Date.now() + idx
+        };
+      });
+
+      const updatedTrans = [...newTransList, ...transacciones];
+      setTransacciones(updatedTrans);
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updatedTrans));
+
+      if (db) {
+        newTransList.forEach(async tr => {
+          try {
+            await setDoc(doc(db, 'transacciones', tr.idDoc), tr);
+          } catch (err) {
+            console.warn("Firestore transaccion notice:", err);
+          }
         });
       }
     }
@@ -1441,7 +1485,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       usuarioCreador: currentUser.username,
       fechaCreacion: Date.now(),
       aplicadoInventario: shouldApplyStock,
-      estado: data.estado || 'pendiente'
+      estado: data.estado || 'aprobada'
     };
 
     const updated = [newSolicitud, ...solicitudes];
@@ -1453,14 +1497,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         await setDoc(doc(db, 'solicitudes', newId), newSolicitud, { merge: true });
         setLastSyncTime(new Date());
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.CREATE, `solicitudes/${newId}`);
+        console.warn("Firestore solicitud error:", err);
       }
     }
 
     if (shouldApplyStock) {
-      showToast(`Solicitud ${folio} generada con estatus APROBADA. Se ingresaron los productos al inventario de UP ${upClean}.`, 'success');
+      showToast(`Solicitud ${folio} generada e ingresada: Se agregaron ${data.items.length} insumos al inventario de UP ${upClean}.`, 'success');
     } else {
-      showToast(`Solicitud ${folio} registrada en estatus PENDIENTE. No se ingresará al inventario hasta ser Aprobada / Ingresada.`, 'info');
+      showToast(`Solicitud ${folio} registrada en estatus PENDIENTE.`, 'info');
     }
 
     return newSolicitud;
@@ -1496,52 +1540,111 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         await setDoc(doc(db, 'solicitudes', id), updatedSolicitud, { merge: true });
         setLastSyncTime(new Date());
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.UPDATE, `solicitudes/${id}`);
+        console.warn("Firestore solicitud update notice:", err);
       }
     }
 
+    const targetUpClean = (target.up || primaryUp).trim().toUpperCase().replace(/^UP\s+/, '');
+
     if (willApplyStock) {
       // 1. Ensure all requested items exist in catalog
+      const newCatalogItems: Item[] = [];
+      const currentItems = [...items];
+
       for (const line of target.items) {
         const cleanItemId = line.itemId.trim().toUpperCase();
-        const exists = items.some(i => i.id.toUpperCase() === cleanItemId);
+        const exists = currentItems.some(i => i.id.trim().toUpperCase() === cleanItemId) ||
+                       newCatalogItems.some(i => i.id.trim().toUpperCase() === cleanItemId);
         if (!exists) {
-          await addItem({
+          const newItem: Item = {
             id: cleanItemId,
-            desc: line.desc.trim(),
-            area: line.area || 'GENERAL',
+            desc: (line.desc || cleanItemId).trim().toUpperCase(),
+            unidad: line.unidad || 'PZ',
+            area: line.area ? line.area.trim().toUpperCase() : 'GENERAL',
             reorden: 0
+          };
+          newCatalogItems.push(newItem);
+        }
+      }
+
+      if (newCatalogItems.length > 0) {
+        const updatedItems = [...items, ...newCatalogItems];
+        setItems(updatedItems);
+        localStorage.setItem('invItems_Pro', JSON.stringify(updatedItems));
+        if (db) {
+          newCatalogItems.forEach(async it => {
+            try {
+              await setDoc(doc(db, 'items', it.id), it);
+            } catch (err) {
+              console.warn("Firestore item notice:", err);
+            }
           });
         }
       }
 
-      // 2. Add 'entrada' transactions
-      for (const item of target.items) {
-        const cleanItemId = item.itemId.trim().toUpperCase();
-        await addTransaction({
+      // 2. Add 'entrada' transactions in batch
+      const newTransList: Transaccion[] = target.items.map((item, idx) => {
+        const idDoc = Date.now().toString(36) + '-' + idx + '-' + Math.random().toString(36).substring(2, 6);
+        return {
+          idDoc,
           tipo: tipoMovimiento,
-          itemId: cleanItemId,
+          itemId: item.itemId.trim().toUpperCase(),
           qty: Number(item.cantidad) || 0,
-          up: target.up,
+          up: targetUpClean,
           fecha: new Date().toISOString().split('T')[0],
-          notas: `Ingreso a Inventario por Solicitud Aprobada ${target.folio}: ${target.solicitante}`
+          notas: `Ingreso Solicitud Aprobada ${target.folio}: ${target.solicitante}`,
+          usuario: currentUser?.username || 'sistema',
+          timestamp: Date.now() + idx
+        };
+      });
+
+      const updatedTrans = [...newTransList, ...transacciones];
+      setTransacciones(updatedTrans);
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updatedTrans));
+
+      if (db) {
+        newTransList.forEach(async tr => {
+          try {
+            await setDoc(doc(db, 'transacciones', tr.idDoc), tr);
+          } catch (err) {
+            console.warn("Firestore transaccion notice:", err);
+          }
         });
       }
-      showToast(`Solicitud ${target.folio} APROBADA: Se ingresaron ${target.items.length} insumos al inventario de ${target.up}.`, 'success');
+
+      showToast(`Solicitud ${target.folio} APROBADA: Se sumaron ${target.items.length} insumos al inventario de UP ${targetUpClean}.`, 'success');
     } else if (willRevertStock) {
       // Revert previous entrada if cancelled or changed to pending
-      for (const item of target.items) {
-        const cleanItemId = item.itemId.trim().toUpperCase();
-        await addTransaction({
+      const revertTransList: Transaccion[] = target.items.map((item, idx) => {
+        const idDoc = Date.now().toString(36) + '-rev-' + idx + '-' + Math.random().toString(36).substring(2, 6);
+        return {
+          idDoc,
           tipo: 'salida',
-          itemId: cleanItemId,
+          itemId: item.itemId.trim().toUpperCase(),
           qty: Number(item.cantidad) || 0,
-          up: target.up,
+          up: targetUpClean,
           fecha: new Date().toISOString().split('T')[0],
-          notas: `Reversión de Inventario: Solicitud ${target.folio} cambió a ${nuevoEstado.toUpperCase()}`
+          notas: `Reversión Solicitud ${target.folio} por cambio a ${nuevoEstado.toUpperCase()}`,
+          usuario: currentUser?.username || 'sistema',
+          timestamp: Date.now() + idx
+        };
+      });
+
+      const updatedTrans = [...revertTransList, ...transacciones];
+      setTransacciones(updatedTrans);
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updatedTrans));
+
+      if (db) {
+        revertTransList.forEach(async tr => {
+          try {
+            await setDoc(doc(db, 'transacciones', tr.idDoc), tr);
+          } catch (err) {
+            console.warn("Firestore revert notice:", err);
+          }
         });
       }
-      showToast(`Solicitud ${target.folio} en estatus "${nuevoEstado.toUpperCase()}": Se revirtió el ingreso de existencias en ${target.up}.`, 'warning');
+
+      showToast(`Solicitud ${target.folio} en estatus "${nuevoEstado.toUpperCase()}": Se revirtió el ingreso en UP ${targetUpClean}.`, 'warning');
     } else {
       showToast(`Estado de solicitud ${target.folio} actualizado a "${nuevoEstado.toUpperCase()}"`, 'info');
     }

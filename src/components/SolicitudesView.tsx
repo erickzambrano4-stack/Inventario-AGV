@@ -24,7 +24,14 @@ import {
   Lock,
   Shield,
   PlusCircle,
-  Check
+  Check,
+  ChevronDown,
+  ChevronUp,
+  LayoutList,
+  LayoutGrid,
+  UserCheck,
+  Sparkles,
+  Save
 } from 'lucide-react';
 import { ReciboPrintModal } from './ReciboPrintModal';
 import { ConfirmModal } from './ConfirmModal';
@@ -35,6 +42,7 @@ export const SolicitudesView: React.FC = () => {
     items,
     inventario,
     ups,
+    usuarios,
     responsables,
     currentUser,
     userAllowedUps,
@@ -55,7 +63,21 @@ export const SolicitudesView: React.FC = () => {
   const [filterUp, setFilterUp] = useState<string>(() => {
     return isGlobalAccess ? 'ALL' : primaryUp;
   });
+  const [filterUser, setFilterUser] = useState<string>('all');
   const [search, setSearch] = useState('');
+
+  // View presentation mode: 'lineal' (linear table view) or 'tarjetas' (cards grid)
+  const [viewMode, setViewMode] = useState<'lineal' | 'tarjetas'>('lineal');
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
+
+  const toggleRowExpanded = (id: string) => {
+    setExpandedRowIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Sync filterUp if permissions update
   React.useEffect(() => {
@@ -79,12 +101,21 @@ export const SolicitudesView: React.FC = () => {
     }
     return ups[0] || 'LUPITA';
   });
-  const [formSolicitante, setFormSolicitante] = useState('');
+
+  // Dropdown states for Responsable de Almacén
+  const [selectedResponsableVal, setSelectedResponsableVal] = useState<string>('');
+  const [isCustomResponsable, setIsCustomResponsable] = useState(false);
   const [formResponsable, setFormResponsable] = useState('');
   const [formCargo, setFormCargo] = useState('');
+
+  // Dropdown states for Solicitante (with supervisor information)
+  const [selectedSolicitanteVal, setSelectedSolicitanteVal] = useState<string>('');
+  const [isCustomSolicitante, setIsCustomSolicitante] = useState(false);
+  const [formSolicitante, setFormSolicitante] = useState('');
+
   const [formFecha, setFormFecha] = useState(() => new Date().toISOString().split('T')[0]);
   const [formPrioridad, setFormPrioridad] = useState<'normal' | 'urgente'>('normal');
-  const [formEstado, setFormEstado] = useState<EstadoSolicitud>('pendiente');
+  const [formEstado, setFormEstado] = useState<EstadoSolicitud>('aprobada');
   const [formArea, setFormArea] = useState('');
   const [formObservaciones, setFormObservaciones] = useState('');
 
@@ -103,38 +134,101 @@ export const SolicitudesView: React.FC = () => {
   const [customItemArea, setCustomItemArea] = useState('GENERAL');
   const [customItemUnidad, setCustomItemUnidad] = useState('PZA');
 
+  // Supervisors available from users of the application
+  const supervisores = useMemo(() => {
+    return usuarios.filter(u => u.role === 'supervisor' || u.role === 'admin');
+  }, [usuarios]);
+
+  // Group supervisors: those assigned to formUp first, then others
+  const upSupervisores = useMemo(() => {
+    return supervisores.filter(
+      s => s.up.toUpperCase() === formUp.toUpperCase() ||
+           (s.allowedUps && s.allowedUps.includes(formUp.toUpperCase())) ||
+           s.up === 'ALL'
+    );
+  }, [supervisores, formUp]);
+
+  const otherSupervisores = useMemo(() => {
+    return supervisores.filter(s => !upSupervisores.includes(s));
+  }, [supervisores, upSupervisores]);
+
   // When form UP changes, auto-suggest the active responsable for that UP
   const upResponsables = useMemo(() => {
     return responsables.filter(r => r.up.toUpperCase() === formUp.toUpperCase() && r.activo);
   }, [responsables, formUp]);
 
-  // Sync default responsable when form UP changes or opens
+  const otherResponsables = useMemo(() => {
+    return responsables.filter(r => r.up.toUpperCase() !== formUp.toUpperCase() && r.activo);
+  }, [responsables, formUp]);
+
+  // Sync default responsable and supervisor when form UP changes
   const handleUpChange = (newUp: string) => {
     setFormUp(newUp);
-    const available = responsables.filter(r => r.up.toUpperCase() === newUp.toUpperCase() && r.activo);
-    if (available.length > 0) {
-      setFormResponsable(available[0].nombre);
-      setFormCargo(available[0].cargo);
+
+    // Update responsable selection
+    const availableResp = responsables.filter(r => r.up.toUpperCase() === newUp.toUpperCase() && r.activo);
+    if (availableResp.length > 0) {
+      setSelectedResponsableVal(availableResp[0].nombre);
+      setFormResponsable(availableResp[0].nombre);
+      setFormCargo(availableResp[0].cargo);
+      setIsCustomResponsable(false);
     } else {
+      setSelectedResponsableVal('__custom__');
+      setIsCustomResponsable(true);
       setFormResponsable('');
       setFormCargo('');
+    }
+
+    // Update supervisor default if not custom
+    if (!isCustomSolicitante) {
+      const upSup = supervisores.find(s => s.up.toUpperCase() === newUp.toUpperCase()) ||
+                    supervisores.find(s => s.username === currentUser?.username) ||
+                    supervisores[0];
+      if (upSup) {
+        setSelectedSolicitanteVal(upSup.username);
+        setFormSolicitante(`${upSup.name} (Supervisor UP ${upSup.up})`);
+      }
     }
   };
 
   const openCreateModal = () => {
     const initialUp = !isGlobalAccess ? primaryUp : (ups[0] || 'LUPITA');
-    
     setFormUp(initialUp);
-    const available = responsables.filter(r => r.up.toUpperCase() === initialUp.toUpperCase() && r.activo);
-    if (available.length > 0) {
-      setFormResponsable(available[0].nombre);
-      setFormCargo(available[0].cargo);
+
+    // Default responsable for initialUp from Responsables UP
+    const availableResp = responsables.filter(r => r.up.toUpperCase() === initialUp.toUpperCase() && r.activo);
+    if (availableResp.length > 0) {
+      setSelectedResponsableVal(availableResp[0].nombre);
+      setFormResponsable(availableResp[0].nombre);
+      setFormCargo(availableResp[0].cargo);
+      setIsCustomResponsable(false);
     } else {
+      setSelectedResponsableVal('__custom__');
       setFormResponsable('');
       setFormCargo('');
+      setIsCustomResponsable(true);
     }
 
-    setFormSolicitante('');
+    // Default solicitante with supervisor info (sin Ing.)
+    const defaultSup = supervisores.find(s => s.username === currentUser?.username) ||
+                       supervisores.find(s => s.up.toUpperCase() === initialUp.toUpperCase()) ||
+                       supervisores[0];
+
+    if (defaultSup) {
+      const supLabel = `${defaultSup.name} (Supervisor UP ${defaultSup.up})`;
+      setSelectedSolicitanteVal(defaultSup.username);
+      setFormSolicitante(supLabel);
+      setIsCustomSolicitante(false);
+    } else if (currentUser) {
+      setSelectedSolicitanteVal(currentUser.username);
+      setFormSolicitante(`${currentUser.name} (Supervisor UP ${currentUser.up})`);
+      setIsCustomSolicitante(false);
+    } else {
+      setSelectedSolicitanteVal('__custom__');
+      setFormSolicitante('');
+      setIsCustomSolicitante(true);
+    }
+
     setFormArea('');
     setFormObservaciones('');
     setFormPrioridad('normal');
@@ -293,13 +387,21 @@ export const SolicitudesView: React.FC = () => {
           estado: formEstado,
           usuarioCreador: currentUser?.username || 'sistema'
         },
-        isApproved, // Solo afecta inventario si el estatus es Ingresada / Aprobada
+        isApproved, // Afecta inventario si el estatus es Ingresada / Aprobada
         'entrada'
       );
 
       if (created) {
+        // Cierra la ventana de diálogo inmediatamente
         setIsCreateOpen(false);
-        setViewingSolicitud(created); // Open print preview
+        // Reset de campos
+        setLineItems([]);
+        setFormArea('');
+        setFormObservaciones('');
+        setCustomItemId('');
+        setCustomItemDesc('');
+        setIsCustomItemMode(false);
+        setFormEstado('aprobada');
       }
     } finally {
       setIsSubmitting(false);
@@ -318,6 +420,14 @@ export const SolicitudesView: React.FC = () => {
       if (filterEstado !== 'all' && s.estado !== filterEstado) return false;
       if (filterUp !== 'ALL' && s.up.toUpperCase() !== filterUp.toUpperCase()) return false;
 
+      // Filter by active application users
+      if (filterUser !== 'all') {
+        const matchesUser =
+          (s.usuarioCreador && s.usuarioCreador.toLowerCase() === filterUser.toLowerCase()) ||
+          (s.solicitante && s.solicitante.toLowerCase().includes(filterUser.toLowerCase()));
+        if (!matchesUser) return false;
+      }
+
       if (search.trim()) {
         const query = search.toLowerCase();
         const matchesFolio = s.folio.toLowerCase().includes(query);
@@ -334,7 +444,7 @@ export const SolicitudesView: React.FC = () => {
 
       return true;
     });
-  }, [authorizedSolicitudes, filterEstado, filterUp, search]);
+  }, [authorizedSolicitudes, filterEstado, filterUp, filterUser, search]);
 
   // Statistics
   const stats = useMemo(() => {
@@ -356,6 +466,10 @@ export const SolicitudesView: React.FC = () => {
 
   const handleQuickStatusChange = async (sol: SolicitudInsumo, nuevoEstado: EstadoSolicitud) => {
     await updateSolicitudEstado(sol.id, nuevoEstado);
+  };
+
+  const handleQuickApprove = async (sol: SolicitudInsumo) => {
+    await updateSolicitudEstado(sol.id, 'aprobada');
   };
 
   const handleConfirmDelete = async () => {
@@ -544,6 +658,29 @@ export const SolicitudesView: React.FC = () => {
               </div>
             )}
 
+            {/* User Filter: show only information of application users */}
+            <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2.5 py-1.5">
+              <User className="w-3.5 h-3.5 text-gray-400" />
+              <select
+                value={filterUser}
+                onChange={e => setFilterUser(e.target.value)}
+                className="font-semibold text-gray-700 outline-none text-xs bg-transparent cursor-pointer max-w-[160px] truncate"
+                title="Filtrar por usuario que esté utilizando la aplicación"
+              >
+                <option value="all">Todos los usuarios ({usuarios.length})</option>
+                {currentUser && (
+                  <option value={currentUser.username}>
+                    Mis Solicitudes ({currentUser.name})
+                  </option>
+                )}
+                {usuarios.map(u => (
+                  <option key={u.username} value={u.username}>
+                    {u.name} ({u.role.toUpperCase()} - {u.up})
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Estado Filter */}
             <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2.5 py-1.5">
               <Filter className="w-3.5 h-3.5 text-gray-400" />
@@ -558,11 +695,41 @@ export const SolicitudesView: React.FC = () => {
                 <option value="cancelada">Cancelada</option>
               </select>
             </div>
+
+            {/* Presentation Mode: Lineal vs Tarjetas */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-gray-200">
+              <button
+                type="button"
+                onClick={() => setViewMode('lineal')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  viewMode === 'lineal'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-gray-500 hover:text-gray-900'
+                }`}
+                title="Visualizar solicitudes de forma lineal (tabla de renglones)"
+              >
+                <LayoutList className="w-3.5 h-3.5" />
+                <span>Vista Lineal</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('tarjetas')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  viewMode === 'tarjetas'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-gray-500 hover:text-gray-900'
+                }`}
+                title="Visualizar en tarjetas"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span>Tarjetas</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* List of Solicitudes Cards */}
+      {/* List of Solicitudes - Linear Table or Cards */}
       {filteredSolicitudes.length === 0 ? (
         <div className="bg-white border border-gray-100 rounded-3xl p-12 text-center shadow-xs">
           <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
@@ -570,7 +737,7 @@ export const SolicitudesView: React.FC = () => {
           </div>
           <h3 className="text-base font-bold text-gray-900">No se encontraron solicitudes</h3>
           <p className="text-xs text-gray-500 max-w-md mx-auto mt-1">
-            {search || filterEstado !== 'all' || filterUp !== 'ALL'
+            {search || filterEstado !== 'all' || filterUp !== 'ALL' || filterUser !== 'all'
               ? 'No hay registros que coincidan con los filtros seleccionados.'
               : 'Aún no se han generado solicitudes de insumos para esta sede.'}
           </p>
@@ -583,7 +750,250 @@ export const SolicitudesView: React.FC = () => {
             <span>Crear Primera Solicitud</span>
           </button>
         </div>
+      ) : viewMode === 'lineal' ? (
+        /* Linear Table View (Forma Lineal) */
+        <div className="bg-white border border-gray-200/80 rounded-3xl shadow-xs overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-50/90 border-b border-gray-200/80 text-[11px] font-black uppercase tracking-wider text-gray-500">
+                  <th className="py-3.5 px-4">Folio / Fecha</th>
+                  <th className="py-3.5 px-3">Sede</th>
+                  <th className="py-3.5 px-4">Solicitante (Supervisor)</th>
+                  <th className="py-3.5 px-4">Responsable Almacén</th>
+                  <th className="py-3.5 px-4">Insumos Solicitados</th>
+                  <th className="py-3.5 px-3 text-center">Estatus</th>
+                  <th className="py-3.5 px-3 text-center">Inventario</th>
+                  <th className="py-3.5 px-4 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 font-medium">
+                {filteredSolicitudes.map(sol => {
+                  const totalQty = sol.items.reduce((acc, i) => acc + (Number(i.cantidad) || 0), 0);
+                  const isExpanded = expandedRowIds.has(sol.id);
+
+                  return (
+                    <React.Fragment key={sol.id}>
+                      <tr className="hover:bg-blue-50/20 transition group">
+                        {/* Folio / Fecha */}
+                        <td className="py-3.5 px-4 align-top">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-mono font-black text-gray-900 text-xs">
+                              {sol.folio}
+                            </span>
+                            {sol.prioridad === 'urgente' && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-100 text-rose-700">
+                                URGENTE
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-gray-400 font-normal flex items-center gap-1 mt-0.5">
+                            <Calendar className="w-3 h-3 text-gray-400" /> {sol.fecha}
+                          </span>
+                        </td>
+
+                        {/* Sede (UP) */}
+                        <td className="py-3.5 px-3 align-top whitespace-nowrap">
+                          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 font-bold text-[11px] rounded-lg border border-blue-100 inline-flex items-center gap-1">
+                            <Building2 className="w-3 h-3 text-blue-500" />
+                            UP {sol.up}
+                          </span>
+                        </td>
+
+                        {/* Solicitante (Supervisor) */}
+                        <td className="py-3.5 px-4 align-top">
+                          <div className="flex items-start gap-1.5">
+                            <UserCheck className="w-3.5 h-3.5 text-blue-600 mt-0.5 shrink-0" />
+                            <div>
+                              <span className="font-bold text-gray-900 block">
+                                {sol.solicitante}
+                              </span>
+                              {sol.areaAplicacion && (
+                                <span className="text-[10px] text-blue-600 font-medium block">
+                                  Destino: {sol.areaAplicacion}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Responsable Almacén */}
+                        <td className="py-3.5 px-4 align-top">
+                          <div className="flex items-start gap-1.5">
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 mt-0.5 shrink-0" />
+                            <div>
+                              <span className="font-bold text-gray-900 block">
+                                {sol.responsableAlmacen}
+                              </span>
+                              {sol.responsableCargo && (
+                                <span className="text-[10px] text-gray-400 block truncate max-w-[180px]">
+                                  {sol.responsableCargo}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Insumos resumen */}
+                        <td className="py-3.5 px-4 align-top">
+                          <button
+                            type="button"
+                            onClick={() => toggleRowExpanded(sol.id)}
+                            className="text-left font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 text-xs cursor-pointer group-hover:underline"
+                          >
+                            <span>
+                              {sol.items.length} {sol.items.length === 1 ? 'insumo' : 'insumos'} ({totalQty} uds.)
+                            </span>
+                            {isExpanded ? (
+                              <ChevronUp className="w-3.5 h-3.5 text-blue-600" />
+                            ) : (
+                              <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+                            )}
+                          </button>
+                          <div className="text-[11px] text-gray-500 mt-0.5 truncate max-w-[220px]">
+                            {sol.items.map(i => `${i.cantidad} ${i.unidad} ${i.desc}`).join(', ')}
+                          </div>
+                        </td>
+
+                        {/* Estatus Dropdown */}
+                        <td className="py-3.5 px-3 align-top text-center">
+                          <select
+                            value={sol.estado}
+                            onChange={e => handleQuickStatusChange(sol, e.target.value as EstadoSolicitud)}
+                            className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border outline-none cursor-pointer ${
+                              sol.estado === 'entregada' || sol.estado === 'aprobada'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : sol.estado === 'pendiente'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : 'bg-rose-50 text-rose-700 border-rose-200'
+                            }`}
+                          >
+                            <option value="aprobada">Ingresada / Aprobada</option>
+                            <option value="pendiente">Pendiente</option>
+                            <option value="cancelada">Cancelada</option>
+                          </select>
+                        </td>
+
+                        {/* Inventario Impact */}
+                        <td className="py-3.5 px-3 align-top text-center whitespace-nowrap">
+                          {sol.aplicadoInventario ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
+                              <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                              En Inventario ({sol.up})
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleQuickApprove(sol)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 hover:bg-amber-200 cursor-pointer transition shadow-2xs"
+                              title="Aprobar de inmediato e ingresar cantidades al inventario de la UP"
+                            >
+                              <Clock className="w-3 h-3 text-amber-600" />
+                              Aprobar e Ingresar
+                            </button>
+                          )}
+                        </td>
+
+                        {/* Acciones */}
+                        <td className="py-3.5 px-4 align-top text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setViewingSolicitud(sol)}
+                              className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition cursor-pointer"
+                              title="Ver e imprimir solicitud formal"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">Imprimir</span>
+                            </button>
+
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() => setDeleteTargetId(sol.id)}
+                                className="p-1.5 text-gray-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                                title="Eliminar solicitud"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* Expanded Linear Breakdown */}
+                      {isExpanded && (
+                        <tr className="bg-slate-50/70 border-b border-gray-200">
+                          <td colSpan={8} className="py-3 px-5">
+                            <div className="bg-white rounded-2xl border border-gray-200 p-4 space-y-2.5 shadow-xs">
+                              <div className="flex items-center justify-between text-xs font-bold text-gray-700 border-b border-gray-100 pb-2">
+                                <span className="flex items-center gap-1.5 text-blue-700">
+                                  <ClipboardList className="w-4 h-4" />
+                                  Detalle Lineal de Insumos ({sol.folio} — UP {sol.up})
+                                </span>
+                                <span className="text-gray-500 font-normal text-[11px]">
+                                  Usuario creador: <strong className="text-gray-900">{sol.usuarioCreador}</strong>
+                                </span>
+                              </div>
+
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs">
+                                  <thead>
+                                    <tr className="text-[10px] uppercase text-gray-400 border-b border-gray-100">
+                                      <th className="py-1.5 px-2">Código SKU</th>
+                                      <th className="py-1.5 px-2">Descripción del Insumo</th>
+                                      <th className="py-1.5 px-2 text-right">Cantidad</th>
+                                      <th className="py-1.5 px-2 text-center">Stock Actual en {sol.up}</th>
+                                      <th className="py-1.5 px-2">Unidad</th>
+                                      <th className="py-1.5 px-2">Área / Destino</th>
+                                      <th className="py-1.5 px-2">Notas del Renglón</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-gray-50 text-[11px]">
+                                    {sol.items.map((it, idx) => {
+                                      const invItem = inventario.find(i => i.id.trim().toUpperCase() === it.itemId.trim().toUpperCase());
+                                      const currentUpStock = invItem?.upStock[sol.up] ?? 0;
+                                      return (
+                                        <tr key={idx} className="hover:bg-slate-50">
+                                          <td className="py-2 px-2 font-mono font-bold text-gray-900">{it.itemId}</td>
+                                          <td className="py-2 px-2 text-gray-800 font-medium">{it.desc}</td>
+                                          <td className="py-2 px-2 font-black text-blue-700 text-right">{it.cantidad}</td>
+                                          <td className="py-2 px-2 text-center">
+                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                              currentUpStock > 0 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-gray-100 text-gray-500'
+                                            }`}>
+                                              {currentUpStock.toLocaleString()} {it.unidad}
+                                            </span>
+                                          </td>
+                                          <td className="py-2 px-2 text-gray-600 font-bold">{it.unidad}</td>
+                                          <td className="py-2 px-2 text-blue-800 font-medium">{it.area || sol.areaAplicacion || 'GENERAL'}</td>
+                                          <td className="py-2 px-2 text-gray-400 italic">{it.notas || '—'}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {sol.observaciones && (
+                                <div className="pt-2 text-[11px] text-gray-600 border-t border-gray-100 flex items-start gap-1.5">
+                                  <strong className="text-gray-700">Observaciones:</strong>
+                                  <span>{sol.observaciones}</span>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : (
+        /* Cards Grid View */
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredSolicitudes.map(sol => {
             const totalQty = sol.items.reduce((acc, i) => acc + (Number(i.cantidad) || 0), 0);
@@ -812,7 +1222,7 @@ export const SolicitudesView: React.FC = () => {
                   )}
                 </div>
 
-                {/* Responsable de Almacén */}
+                {/* Responsable de Almacén - Dropdown según corresponda */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="block font-bold text-gray-700 uppercase tracking-wider">
@@ -832,55 +1242,137 @@ export const SolicitudesView: React.FC = () => {
                     )}
                   </div>
                   
-                  {upResponsables.length > 0 ? (
-                    <select
-                      value={formResponsable}
-                      onChange={e => {
-                        setFormResponsable(e.target.value);
-                        const r = upResponsables.find(item => item.nombre === e.target.value);
-                        if (r) setFormCargo(r.cargo);
-                      }}
-                      className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer"
-                    >
-                      {upResponsables.map(r => (
-                        <option key={r.id} value={r.nombre}>
-                          {r.nombre} ({r.cargo})
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div>
+                  <select
+                    value={selectedResponsableVal}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSelectedResponsableVal(val);
+                      if (val === '__custom__') {
+                        setIsCustomResponsable(true);
+                        setFormResponsable('');
+                        setFormCargo('');
+                      } else {
+                        setIsCustomResponsable(false);
+                        const r = responsables.find(item => item.nombre === val);
+                        if (r) {
+                          setFormResponsable(r.nombre);
+                          setFormCargo(r.cargo);
+                        } else {
+                          setFormResponsable(val);
+                          setFormCargo('');
+                        }
+                      }
+                    }}
+                    className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer shadow-2xs"
+                  >
+                    {upResponsables.length > 0 && (
+                      <optgroup label={`Responsables UP — Sede ${formUp}`}>
+                        {upResponsables.map(r => (
+                          <option key={r.id} value={r.nombre}>
+                            {r.nombre} — {r.cargo} (UP {r.up})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {otherResponsables.length > 0 && (
+                      <optgroup label="Responsables UP — Otras Sedes">
+                        {otherResponsables.map(r => (
+                          <option key={r.id} value={r.nombre}>
+                            {r.nombre} — {r.cargo} (UP {r.up})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="__custom__">+ Otro responsable (Escribir nombre manualmente)...</option>
+                  </select>
+
+                  {isCustomResponsable && (
+                    <div className="mt-2 space-y-1.5 animate-in fade-in duration-150">
                       <input
                         type="text"
                         value={formResponsable}
                         onChange={e => setFormResponsable(e.target.value)}
-                        placeholder="Nombre del custodio o encargado..."
+                        placeholder="Nombre completo del custodio o responsable de bodega..."
                         required
-                        className="w-full px-3.5 py-2.5 bg-white border border-amber-300 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs"
+                        className="w-full px-3 py-2 bg-slate-50 border border-blue-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
                       />
-                      <p className="text-[10px] text-amber-700 mt-1 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3 text-amber-600" />
-                        No hay responsable activo configurado para UP {formUp}. Puedes escribirlo manualmente.
-                      </p>
+                      <input
+                        type="text"
+                        value={formCargo}
+                        onChange={e => setFormCargo(e.target.value)}
+                        placeholder="Cargo del responsable (ej. Encargado de Bodega)..."
+                        className="w-full px-3 py-1.5 bg-slate-50 border border-gray-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Solicitante, Fecha, Prioridad, Estatus */}
+              {/* Solicitante con información del supervisor, Fecha, Prioridad, Estatus */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Solicitante - Lista desplegable con información del supervisor (sin Ing) */}
                 <div>
-                  <label className="block font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-                    Solicitante / Cuadrilla *
+                  <label className="block font-bold text-gray-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                    <span>Solicitante (Supervisor) *</span>
+                    <span className="text-[10px] text-blue-600 font-extrabold flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3" />
+                      Supervisor
+                    </span>
                   </label>
-                  <input
-                    type="text"
-                    value={formSolicitante}
-                    onChange={e => setFormSolicitante(e.target.value)}
-                    placeholder="Ej. Ing. Roberto Sánchez (Cuadrilla 2)"
-                    required
-                    className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium focus:ring-2 focus:ring-blue-500 outline-none text-xs"
-                  />
+
+                  <select
+                    value={selectedSolicitanteVal}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSelectedSolicitanteVal(val);
+                      if (val === '__custom__') {
+                        setIsCustomSolicitante(true);
+                        setFormSolicitante('');
+                      } else {
+                        setIsCustomSolicitante(false);
+                        const sup = supervisores.find(s => s.username === val);
+                        if (sup) {
+                          setFormSolicitante(`${sup.name} (Supervisor UP ${sup.up})`);
+                        } else {
+                          setFormSolicitante(val);
+                        }
+                      }
+                    }}
+                    className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer shadow-2xs"
+                  >
+                    {upSupervisores.length > 0 && (
+                      <optgroup label={`Supervisores de UP ${formUp}`}>
+                        {upSupervisores.map(s => (
+                          <option key={s.username} value={s.username}>
+                            {s.name} — Supervisor UP {s.up}{currentUser?.username === s.username ? ' [Tú]' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {otherSupervisores.length > 0 && (
+                      <optgroup label="Supervisores de Otras Sedes">
+                        {otherSupervisores.map(s => (
+                          <option key={s.username} value={s.username}>
+                            {s.name} — Supervisor UP {s.up}{currentUser?.username === s.username ? ' [Tú]' : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    <option value="__custom__">+ Otro solicitante (Cuadrilla / Personal de campo)...</option>
+                  </select>
+
+                  {isCustomSolicitante && (
+                    <div className="mt-2 animate-in fade-in duration-150">
+                      <input
+                        type="text"
+                        value={formSolicitante}
+                        onChange={e => setFormSolicitante(e.target.value)}
+                        placeholder="Ej. Roberto Sánchez (Cuadrilla de Cosecha 2)..."
+                        required
+                        className="w-full px-3 py-2 bg-slate-50 border border-blue-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -923,8 +1415,8 @@ export const SolicitudesView: React.FC = () => {
                         : 'bg-amber-50 text-amber-800 border-amber-300'
                     }`}
                   >
-                    <option value="pendiente">Pendiente (No ingresa a inventario aún)</option>
-                    <option value="aprobada">Ingresada / Aprobada (Ingresa de inmediato)</option>
+                    <option value="aprobada">Ingresada / Aprobada (Ingresa de inmediato al inventario)</option>
+                    <option value="pendiente">Pendiente (Por autorizar)</option>
                   </select>
                 </div>
               </div>
@@ -1266,19 +1758,11 @@ export const SolicitudesView: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isSubmitting || lineItems.length === 0}
-                  className={`px-6 py-2.5 disabled:opacity-50 text-white rounded-xl font-bold text-xs shadow-md transition flex items-center gap-2 cursor-pointer active:scale-95 ${
-                    formEstado === 'aprobada'
-                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/25'
-                      : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/25'
-                  }`}
+                  className="px-6 py-2.5 disabled:opacity-50 text-white rounded-xl font-bold text-xs shadow-md transition flex items-center gap-2 cursor-pointer active:scale-95 bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/25"
                 >
-                  <Printer className="w-4 h-4" />
+                  <Save className="w-4 h-4" />
                   <span>
-                    {isSubmitting
-                      ? 'Guardando...'
-                      : formEstado === 'aprobada'
-                      ? 'Generar Solicitud e Ingresar a Inventario'
-                      : 'Generar Solicitud (Pendiente de Ingreso)'}
+                    {isSubmitting ? 'Guardando...' : 'Generar Solicitud'}
                   </span>
                 </button>
               </div>

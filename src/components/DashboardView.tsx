@@ -43,6 +43,7 @@ export const DashboardView: React.FC = () => {
     transacciones,
     stats,
     ups,
+    usuarios,
     currentUser,
     userAllowedUps,
     isGlobalAccess,
@@ -54,9 +55,21 @@ export const DashboardView: React.FC = () => {
   const [selectedUp, setSelectedUp] = useState<string>(() => {
     return isGlobalAccess ? 'all' : primaryUp;
   });
+  // Active user scope state: 'activos' (all app users) or specific username
+  const [userScope, setUserScope] = useState<string>(() => {
+    if (currentUser?.role === 'supervisor') {
+      return currentUser.username;
+    }
+    return 'activos';
+  });
   // Option to only show products with active inventory / stock > 0
   const [onlyWithStock, setOnlyWithStock] = useState<boolean>(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+
+  // Set of valid application usernames
+  const validAppUsernames = useMemo(() => {
+    return new Set(usuarios.map(u => u.username.toLowerCase()));
+  }, [usuarios]);
 
   // Sync selectedUp if user permissions or userAllowedUps change
   React.useEffect(() => {
@@ -112,7 +125,7 @@ export const DashboardView: React.FC = () => {
     }).length;
   }, [inventario, selectedUp, isGlobalAccess, primaryUp]);
 
-  // Dynamic KPI Stats adapted strictly to authorized UP and onlyWithStock filter
+  // Dynamic KPI Stats adapted strictly to authorized UP, active application users, and filters
   const dashboardStats = useMemo(() => {
     const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
     const isFilteredByUp = effectiveUp !== 'all' || !isGlobalAccess;
@@ -120,13 +133,26 @@ export const DashboardView: React.FC = () => {
     const withStockGlobal = inventario.filter(i => i.stockTotal > 0).length;
     const withStockUp = inventario.filter(i => (i.upStock[effectiveUp] || 0) > 0).length;
 
+    // Filter movements to users using the application
+    const scopedTransacciones = transacciones.filter(t => {
+      const u = (t.usuario || '').trim().toLowerCase();
+      const isAppUser = validAppUsernames.has(u) || u === 'admin' || (currentUser && u === currentUser.username.toLowerCase());
+      if (!isAppUser) return false;
+      if (userScope !== 'activos') {
+        return u === userScope.toLowerCase();
+      }
+      return true;
+    });
+
     if (!isFilteredByUp) {
+      const entradasCount = scopedTransacciones.filter(t => t.tipo === 'entrada').length;
+      const salidasCount = scopedTransacciones.filter(t => t.tipo === 'salida').length;
       return {
         totalItems: onlyWithStock ? withStockGlobal : stats.totalItems,
         catalogTotal: stats.totalItems,
         withStockCount: withStockGlobal,
-        totalEntradas: stats.totalEntradas,
-        totalSalidas: stats.totalSalidas,
+        totalEntradas: entradasCount,
+        totalSalidas: salidasCount,
         alertas: stats.alertas,
         isUpFiltered: false,
         upName: 'Todas las UPs'
@@ -134,10 +160,10 @@ export const DashboardView: React.FC = () => {
     }
 
     const currentTargetUp = effectiveUp;
-    const entradasInUp = transacciones.filter(
+    const entradasInUp = scopedTransacciones.filter(
       t => t.tipo === 'entrada' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
     ).length;
-    const salidasInUp = transacciones.filter(
+    const salidasInUp = scopedTransacciones.filter(
       t => t.tipo === 'salida' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
     ).length;
     const alertasInUp = inventario.filter(
@@ -154,7 +180,7 @@ export const DashboardView: React.FC = () => {
       isUpFiltered: true,
       upName: currentTargetUp
     };
-  }, [selectedUp, isGlobalAccess, primaryUp, stats, inventario, transacciones, onlyWithStock]);
+  }, [selectedUp, isGlobalAccess, primaryUp, stats, inventario, transacciones, onlyWithStock, validAppUsernames, userScope, currentUser]);
 
   // Filter products for table
   const filtered = useMemo(() => {
@@ -502,6 +528,12 @@ export const DashboardView: React.FC = () => {
                 <MapPin className="w-3 h-3" /> UP: {selectedUp}
               </span>
             )}
+            {currentUser && (
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-1.5 shadow-2xs">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>En Línea: {currentUser.name} ({currentUser.role.toUpperCase()} - UP {currentUser.up})</span>
+              </span>
+            )}
           </div>
           <p className="text-sm text-gray-500 mt-1">
             {isGlobalAccess
@@ -653,6 +685,30 @@ export const DashboardView: React.FC = () => {
               <span>Ver Todas</span>
             </button>
           )}
+
+          {/* Active User Filter */}
+          <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+            <span className="font-semibold text-gray-500">Usuario:</span>
+            <select
+              value={userScope}
+              onChange={e => setUserScope(e.target.value)}
+              className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[150px] truncate"
+              title="Mostrar información del usuario que esté utilizando la aplicación"
+            >
+              <option value="activos">Todos los usuarios ({usuarios.length})</option>
+              {currentUser && (
+                <option value={currentUser.username}>
+                  Mi usuario ({currentUser.name})
+                </option>
+              )}
+              {usuarios.map(u => (
+                <option key={u.username} value={u.username}>
+                  {u.name} ({u.role.toUpperCase()})
+                </option>
+              ))}
+            </select>
+          </div>
 
           <button
             type="button"
