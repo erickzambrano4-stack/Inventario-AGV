@@ -297,7 +297,7 @@ export const ResponsablesView: React.FC = () => {
                 type="text"
                 value={nombre}
                 onChange={e => setNombre(e.target.value)}
-                placeholder="Ej. Ing. Carlos Mendoza"
+                placeholder="Ej. Carlos Mendoza"
                 required
                 className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium focus:ring-2 focus:ring-teal-500 outline-none text-gray-900 text-xs"
               />

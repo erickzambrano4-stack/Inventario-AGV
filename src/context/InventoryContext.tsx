@@ -614,7 +614,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return items.map(item => {
       const upStock: Record<string, number> = {};
       ups.forEach(up => {
+        const clean = up.trim().toUpperCase().replace(/^UP\s+/, '');
         upStock[up] = 0;
+        upStock[clean] = 0;
+        upStock[`UP ${clean}`] = 0;
       });
 
       let totalEntradas = 0;
@@ -629,12 +632,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
           if (t.tipo === 'entrada') {
             totalEntradas += t.qty;
-            if (upStock[matchedUpKey] !== undefined) upStock[matchedUpKey] += t.qty;
-            else upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) + t.qty;
+            upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) + t.qty;
+            upStock[tUpClean] = (upStock[tUpClean] || 0) + t.qty;
+            upStock[`UP ${tUpClean}`] = (upStock[`UP ${tUpClean}`] || 0) + t.qty;
           } else if (t.tipo === 'salida') {
             totalSalidas += t.qty;
-            if (upStock[matchedUpKey] !== undefined) upStock[matchedUpKey] -= t.qty;
-            else upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) - t.qty;
+            upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) - t.qty;
+            upStock[tUpClean] = (upStock[tUpClean] || 0) - t.qty;
+            upStock[`UP ${tUpClean}`] = (upStock[`UP ${tUpClean}`] || 0) - t.qty;
           }
         }
       });
@@ -1452,7 +1457,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           idDoc,
           tipo: tipoMovimiento,
           itemId: item.itemId.trim().toUpperCase(),
-          qty: Number(item.cantidad) || 0,
+          qty: Math.max(1, Number(item.cantidad) || 1),
           up: upClean,
           fecha: data.fecha || new Date().toISOString().split('T')[0],
           notas: `Ingreso Solicitud ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`,
@@ -1521,7 +1526,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!target) return false;
 
     const isTargetApproved = nuevoEstado === 'entregada' || nuevoEstado === 'aprobada';
-    const willApplyStock = !target.aplicadoInventario && isTargetApproved;
+    const targetFolio = target.folio || '';
+    const hasTransactions = transacciones.some(t =>
+      Boolean(targetFolio && (t.notas || '').includes(targetFolio))
+    );
+    const willApplyStock = isTargetApproved && (!target.aplicadoInventario || !hasTransactions);
     const willRevertStock = target.aplicadoInventario && !isTargetApproved;
 
     const updatedSolicitud: SolicitudInsumo = {
@@ -1589,7 +1598,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           idDoc,
           tipo: tipoMovimiento,
           itemId: item.itemId.trim().toUpperCase(),
-          qty: Number(item.cantidad) || 0,
+          qty: Math.max(1, Number(item.cantidad) || 1),
           up: targetUpClean,
           fecha: new Date().toISOString().split('T')[0],
           notas: `Ingreso Solicitud Aprobada ${target.folio}: ${target.solicitante}`,

@@ -134,43 +134,63 @@ export const SolicitudesView: React.FC = () => {
   const [customItemArea, setCustomItemArea] = useState('GENERAL');
   const [customItemUnidad, setCustomItemUnidad] = useState('PZA');
 
+  // Helper to strip 'Ing.' or 'Ing ' from names
+  const stripIngPrefix = (text: string): string => {
+    if (!text) return '';
+    return text
+      .replace(/^\s*(?:ing\.|ing|ingeniero|ingeniera)\s+/i, '')
+      .replace(/\b(?:ing\.|ing\b|ingeniero|ingeniera)\s*/gi, '')
+      .trim();
+  };
+
+  const cleanUp = (u?: string) => (u || '').trim().toUpperCase().replace(/^UP\s+/, '');
+
   // Supervisors available from users of the application
   const supervisores = useMemo(() => {
     return usuarios.filter(u => u.role === 'supervisor' || u.role === 'admin');
   }, [usuarios]);
 
+  const formUpClean = cleanUp(formUp);
+
   // Group supervisors: those assigned to formUp first, then others
   const upSupervisores = useMemo(() => {
     return supervisores.filter(
-      s => s.up.toUpperCase() === formUp.toUpperCase() ||
-           (s.allowedUps && s.allowedUps.includes(formUp.toUpperCase())) ||
+      s => cleanUp(s.up) === formUpClean ||
+           (s.allowedUps && s.allowedUps.some(u => cleanUp(u) === formUpClean)) ||
            s.up === 'ALL'
     );
-  }, [supervisores, formUp]);
+  }, [supervisores, formUpClean]);
 
   const otherSupervisores = useMemo(() => {
     return supervisores.filter(s => !upSupervisores.includes(s));
   }, [supervisores, upSupervisores]);
 
-  // When form UP changes, auto-suggest the active responsable for that UP
+  // When form UP changes, auto-suggest the active responsable for that UP from Responsables UP
   const upResponsables = useMemo(() => {
-    return responsables.filter(r => r.up.toUpperCase() === formUp.toUpperCase() && r.activo);
-  }, [responsables, formUp]);
+    return responsables.filter(r => cleanUp(r.up) === formUpClean && r.activo !== false);
+  }, [responsables, formUpClean]);
 
   const otherResponsables = useMemo(() => {
-    return responsables.filter(r => r.up.toUpperCase() !== formUp.toUpperCase() && r.activo);
-  }, [responsables, formUp]);
+    return responsables.filter(r => cleanUp(r.up) !== formUpClean && r.activo !== false);
+  }, [responsables, formUpClean]);
 
   // Sync default responsable and supervisor when form UP changes
   const handleUpChange = (newUp: string) => {
     setFormUp(newUp);
+    const newUpClean = cleanUp(newUp);
 
-    // Update responsable selection
-    const availableResp = responsables.filter(r => r.up.toUpperCase() === newUp.toUpperCase() && r.activo);
+    // Update responsable selection from Responsables UP creados
+    const availableResp = responsables.filter(r => cleanUp(r.up) === newUpClean && r.activo !== false);
     if (availableResp.length > 0) {
       setSelectedResponsableVal(availableResp[0].nombre);
       setFormResponsable(availableResp[0].nombre);
       setFormCargo(availableResp[0].cargo);
+      setIsCustomResponsable(false);
+    } else if (responsables.length > 0) {
+      const fallback = responsables.find(r => r.activo !== false) || responsables[0];
+      setSelectedResponsableVal(fallback.nombre);
+      setFormResponsable(fallback.nombre);
+      setFormCargo(fallback.cargo);
       setIsCustomResponsable(false);
     } else {
       setSelectedResponsableVal('__custom__');
@@ -179,28 +199,33 @@ export const SolicitudesView: React.FC = () => {
       setFormCargo('');
     }
 
-    // Update supervisor default if not custom
+    // Update supervisor default if not custom (sin Ing.)
     if (!isCustomSolicitante) {
-      const upSup = supervisores.find(s => s.up.toUpperCase() === newUp.toUpperCase()) ||
+      const upSup = supervisores.find(s => cleanUp(s.up) === newUpClean) ||
                     supervisores.find(s => s.username === currentUser?.username) ||
                     supervisores[0];
       if (upSup) {
         setSelectedSolicitanteVal(upSup.username);
-        setFormSolicitante(`${upSup.name} (Supervisor UP ${upSup.up})`);
+        setFormSolicitante(`${stripIngPrefix(upSup.name)} (Supervisor UP ${cleanUp(upSup.up)})`);
       }
     }
   };
 
   const openCreateModal = () => {
     const initialUp = !isGlobalAccess ? primaryUp : (ups[0] || 'LUPITA');
+    const initialUpClean = cleanUp(initialUp);
     setFormUp(initialUp);
 
-    // Default responsable for initialUp from Responsables UP
-    const availableResp = responsables.filter(r => r.up.toUpperCase() === initialUp.toUpperCase() && r.activo);
-    if (availableResp.length > 0) {
-      setSelectedResponsableVal(availableResp[0].nombre);
-      setFormResponsable(availableResp[0].nombre);
-      setFormCargo(availableResp[0].cargo);
+    // Default responsable for initialUp from Responsables UP creados
+    const availableResp = responsables.filter(r => cleanUp(r.up) === initialUpClean && r.activo !== false);
+    const fallbackResp = availableResp.length > 0
+      ? availableResp[0]
+      : (responsables.find(r => r.activo !== false) || responsables[0]);
+
+    if (fallbackResp) {
+      setSelectedResponsableVal(fallbackResp.nombre);
+      setFormResponsable(fallbackResp.nombre);
+      setFormCargo(fallbackResp.cargo);
       setIsCustomResponsable(false);
     } else {
       setSelectedResponsableVal('__custom__');
@@ -211,17 +236,17 @@ export const SolicitudesView: React.FC = () => {
 
     // Default solicitante with supervisor info (sin Ing.)
     const defaultSup = supervisores.find(s => s.username === currentUser?.username) ||
-                       supervisores.find(s => s.up.toUpperCase() === initialUp.toUpperCase()) ||
+                       supervisores.find(s => cleanUp(s.up) === initialUpClean) ||
                        supervisores[0];
 
     if (defaultSup) {
-      const supLabel = `${defaultSup.name} (Supervisor UP ${defaultSup.up})`;
+      const supLabel = `${stripIngPrefix(defaultSup.name)} (Supervisor UP ${cleanUp(defaultSup.up)})`;
       setSelectedSolicitanteVal(defaultSup.username);
       setFormSolicitante(supLabel);
       setIsCustomSolicitante(false);
     } else if (currentUser) {
       setSelectedSolicitanteVal(currentUser.username);
-      setFormSolicitante(`${currentUser.name} (Supervisor UP ${currentUser.up})`);
+      setFormSolicitante(`${stripIngPrefix(currentUser.name)} (Supervisor UP ${cleanUp(currentUser.up)})`);
       setIsCustomSolicitante(false);
     } else {
       setSelectedSolicitanteVal('__custom__');
@@ -232,7 +257,8 @@ export const SolicitudesView: React.FC = () => {
     setFormArea('');
     setFormObservaciones('');
     setFormPrioridad('normal');
-    setFormEstado('pendiente');
+    // Default to 'aprobada' so upon clicking Generar it automatically inputs into inventory
+    setFormEstado('aprobada');
     setFormFecha(new Date().toISOString().split('T')[0]);
     setLineItems([]);
     setSelectedProductToAdd('');
@@ -1265,11 +1291,14 @@ export const SolicitudesView: React.FC = () => {
                     }}
                     className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer shadow-2xs"
                   >
+                    {responsables.length === 0 && (
+                      <option value="" disabled>No hay responsables creados en Responsables UP</option>
+                    )}
                     {upResponsables.length > 0 && (
-                      <optgroup label={`Responsables UP — Sede ${formUp}`}>
+                      <optgroup label={`Responsables UP — Sede ${cleanUp(formUp)}`}>
                         {upResponsables.map(r => (
                           <option key={r.id} value={r.nombre}>
-                            {r.nombre} — {r.cargo} (UP {r.up})
+                            {r.nombre} — {r.cargo} (UP {cleanUp(r.up)})
                           </option>
                         ))}
                       </optgroup>
@@ -1278,7 +1307,7 @@ export const SolicitudesView: React.FC = () => {
                       <optgroup label="Responsables UP — Otras Sedes">
                         {otherResponsables.map(r => (
                           <option key={r.id} value={r.nombre}>
-                            {r.nombre} — {r.cargo} (UP {r.up})
+                            {r.nombre} — {r.cargo} (UP {cleanUp(r.up)})
                           </option>
                         ))}
                       </optgroup>
@@ -1332,19 +1361,19 @@ export const SolicitudesView: React.FC = () => {
                         setIsCustomSolicitante(false);
                         const sup = supervisores.find(s => s.username === val);
                         if (sup) {
-                          setFormSolicitante(`${sup.name} (Supervisor UP ${sup.up})`);
+                          setFormSolicitante(`${stripIngPrefix(sup.name)} (Supervisor UP ${cleanUp(sup.up)})`);
                         } else {
-                          setFormSolicitante(val);
+                          setFormSolicitante(stripIngPrefix(val));
                         }
                       }
                     }}
                     className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-medium text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none text-xs cursor-pointer shadow-2xs"
                   >
                     {upSupervisores.length > 0 && (
-                      <optgroup label={`Supervisores de UP ${formUp}`}>
+                      <optgroup label={`Supervisores de UP ${cleanUp(formUp)}`}>
                         {upSupervisores.map(s => (
                           <option key={s.username} value={s.username}>
-                            {s.name} — Supervisor UP {s.up}{currentUser?.username === s.username ? ' [Tú]' : ''}
+                            {stripIngPrefix(s.name)} — Supervisor UP {cleanUp(s.up)}{currentUser?.username === s.username ? ' [Tú]' : ''}
                           </option>
                         ))}
                       </optgroup>
@@ -1353,7 +1382,7 @@ export const SolicitudesView: React.FC = () => {
                       <optgroup label="Supervisores de Otras Sedes">
                         {otherSupervisores.map(s => (
                           <option key={s.username} value={s.username}>
-                            {s.name} — Supervisor UP {s.up}{currentUser?.username === s.username ? ' [Tú]' : ''}
+                            {stripIngPrefix(s.name)} — Supervisor UP {cleanUp(s.up)}{currentUser?.username === s.username ? ' [Tú]' : ''}
                           </option>
                         ))}
                       </optgroup>
@@ -1366,7 +1395,7 @@ export const SolicitudesView: React.FC = () => {
                       <input
                         type="text"
                         value={formSolicitante}
-                        onChange={e => setFormSolicitante(e.target.value)}
+                        onChange={e => setFormSolicitante(stripIngPrefix(e.target.value))}
                         placeholder="Ej. Roberto Sánchez (Cuadrilla de Cosecha 2)..."
                         required
                         className="w-full px-3 py-2 bg-slate-50 border border-blue-300 rounded-xl text-xs font-medium focus:ring-2 focus:ring-blue-500 outline-none"
