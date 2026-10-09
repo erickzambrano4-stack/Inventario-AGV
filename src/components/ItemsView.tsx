@@ -120,9 +120,10 @@ export const ItemsView: React.FC = () => {
       // Filter by stock in UP/sede of active user
       if (onlyStockInUp) {
         const inv = inventario.find(inv => inv.id === i.id);
+        const cleanFilter = stockUpFilter.trim().toUpperCase().replace(/^UP\s+/, '');
         const stock = stockUpFilter === 'ALL'
           ? (inv?.stockTotal || 0)
-          : (inv?.upStock[stockUpFilter] || 0);
+          : (inv?.upStock[stockUpFilter] ?? inv?.upStock[cleanFilter] ?? 0);
         if (stock <= 0) return false;
       }
 
@@ -604,9 +605,10 @@ export const ItemsView: React.FC = () => {
                 pageItems.map(item => {
                   const isSelected = selectedIds.has(item.id);
                   const inv = inventario.find(i => i.id.trim().toUpperCase() === item.id.trim().toUpperCase());
+                  const cleanStockFilter = stockUpFilter.trim().toUpperCase().replace(/^UP\s+/, '');
                   const currentStockInScope = stockUpFilter === 'ALL'
                     ? (inv?.stockTotal ?? 0)
-                    : (inv?.upStock[stockUpFilter] ?? 0);
+                    : (inv?.upStock[stockUpFilter] ?? inv?.upStock[cleanStockFilter] ?? 0);
                   const totalAll = inv?.stockTotal ?? 0;
 
                   return (

@@ -203,15 +203,17 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Calculate permissions and UP scope for the logged-in user
   const isGlobalAccess = useMemo(() => {
     if (!currentUser) return false;
-    if (currentUser.role === 'admin') return true;
+    const roleClean = (currentUser.role || '').trim().toLowerCase();
+    if (roleClean === 'admin') return true;
     if (currentUser.up === 'ALL') return true;
-    if (currentUser.allowedUps && currentUser.allowedUps.includes('ALL')) return true;
+    if (currentUser.allowedUps && currentUser.allowedUps.some(u => u.trim().toUpperCase() === 'ALL')) return true;
     return false;
   }, [currentUser]);
 
   const userAllowedUps = useMemo(() => {
     if (!currentUser) return ups;
-    if (isGlobalAccess) return ups;
+    const roleClean = (currentUser.role || '').trim().toLowerCase();
+    if (roleClean === 'admin' || isGlobalAccess) return ups;
 
     if (currentUser.allowedUps && currentUser.allowedUps.length > 0) {
       const explicit = currentUser.allowedUps
@@ -237,11 +239,12 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const isUpAuthorized = useCallback(
     (upName: string) => {
       if (!upName) return false;
-      if (isGlobalAccess) return true;
+      const roleClean = (currentUser?.role || '').trim().toLowerCase();
+      if (roleClean === 'admin' || isGlobalAccess) return true;
       const cleanTarget = upName.trim().toUpperCase().replace(/^UP\s+/, '');
       return userAllowedUps.some(u => u.trim().toUpperCase().replace(/^UP\s+/, '') === cleanTarget);
     },
-    [isGlobalAccess, userAllowedUps]
+    [currentUser, isGlobalAccess, userAllowedUps]
   );
 
   const [responsables, setResponsables] = useState<ResponsableAlmacen[]>(() => {
@@ -431,16 +434,39 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             });
           });
 
+          // Retrieve set of locally deleted IDs to prevent resurrecting deleted movements
+          let deletedIds = new Set<string>();
+          try {
+            const savedDeleted = localStorage.getItem('invDeletedTrans_Pro');
+            if (savedDeleted) {
+              const parsed = JSON.parse(savedDeleted);
+              if (Array.isArray(parsed)) {
+                deletedIds = new Set(parsed);
+              }
+            }
+          } catch {
+            // Ignore
+          }
+
           setTransacciones(prevLocal => {
             const transMap = new Map<string, Transaccion>();
-            // Remote transactions are authoritative
-            remoteTrans.forEach(t => transMap.set(t.idDoc, t));
-            // Keep local transactions that haven't synced to Firestore yet
+            // Remote transactions (that weren't deleted locally) are authoritative
+            remoteTrans.forEach(t => {
+              if (!deletedIds.has(t.idDoc)) {
+                transMap.set(t.idDoc, t);
+              }
+            });
+
+            // Keep very recent local transactions that haven't synced to Firestore yet
             prevLocal.forEach(localT => {
-              if (!transMap.has(localT.idDoc) && !isDemoItem(localT.itemId)) {
-                transMap.set(localT.idDoc, localT);
-                if (db) {
-                  setDoc(doc(db, 'transacciones', localT.idDoc), localT).catch(console.warn);
+              if (!transMap.has(localT.idDoc) && !deletedIds.has(localT.idDoc) && !isDemoItem(localT.itemId)) {
+                // If created recently (within last 3 minutes), keep and sync
+                const isRecent = Date.now() - (localT.timestamp || 0) < 180000;
+                if (isRecent) {
+                  transMap.set(localT.idDoc, localT);
+                  if (db) {
+                    setDoc(doc(db, 'transacciones', localT.idDoc), localT).catch(console.warn);
+                  }
                 }
               }
             });
@@ -653,12 +679,13 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Inventory calculation
   const inventario = useMemo<InventarioItem[]>(() => {
     return items.map(item => {
-      const upStock: Record<string, number> = {};
-      ups.forEach(up => {
-        const clean = up.trim().toUpperCase().replace(/^UP\s+/, '');
-        upStock[up] = 0;
-        upStock[clean] = 0;
-        upStock[`UP ${clean}`] = 0;
+      // Clean map accumulating per-UP stock (single count per movement)
+      const canonicalTotals: Record<string, number> = {};
+
+      // Initialize all known UPs
+      ups.forEach(u => {
+        const clean = u.trim().toUpperCase().replace(/^UP\s+/, '');
+        canonicalTotals[clean] = 0;
       });
 
       let totalEntradas = 0;
@@ -668,21 +695,39 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       transacciones.forEach(t => {
         const tItemId = (t.itemId || '').trim().toUpperCase();
         if (tItemId === cleanItemId) {
-          const tUpClean = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '');
-          const matchedUpKey = ups.find(u => u.trim().toUpperCase().replace(/^UP\s+/, '') === tUpClean) || t.up;
+          const qty = Number(t.qty) || 0;
+          const cleanUp = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') || 'GENERAL';
+
+          if (canonicalTotals[cleanUp] === undefined) {
+            canonicalTotals[cleanUp] = 0;
+          }
 
           if (t.tipo === 'entrada') {
-            totalEntradas += t.qty;
-            upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) + t.qty;
-            upStock[tUpClean] = (upStock[tUpClean] || 0) + t.qty;
-            upStock[`UP ${tUpClean}`] = (upStock[`UP ${tUpClean}`] || 0) + t.qty;
+            totalEntradas += qty;
+            canonicalTotals[cleanUp] += qty;
           } else if (t.tipo === 'salida') {
-            totalSalidas += t.qty;
-            upStock[matchedUpKey] = (upStock[matchedUpKey] || 0) - t.qty;
-            upStock[tUpClean] = (upStock[tUpClean] || 0) - t.qty;
-            upStock[`UP ${tUpClean}`] = (upStock[`UP ${tUpClean}`] || 0) - t.qty;
+            totalSalidas += qty;
+            canonicalTotals[cleanUp] -= qty;
           }
         }
+      });
+
+      // Construct upStock with all access keys mapped to the single true balance
+      const upStock: Record<string, number> = {};
+      ups.forEach(u => {
+        const clean = u.trim().toUpperCase().replace(/^UP\s+/, '');
+        const val = canonicalTotals[clean] || 0;
+        upStock[u] = val;
+        upStock[clean] = val;
+        upStock[`UP ${clean}`] = val;
+        upStock[u.toUpperCase()] = val;
+      });
+
+      // Include any other UPs found in movements
+      Object.keys(canonicalTotals).forEach(clean => {
+        const val = canonicalTotals[clean] || 0;
+        upStock[clean] = val;
+        upStock[`UP ${clean}`] = val;
       });
 
       return {
@@ -1009,26 +1054,49 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return false;
     }
 
-    const upClean = trans.up.trim().toUpperCase();
-    if (!isGlobalAccess && !isUpAuthorized(upClean)) {
-      showToast(`No tienes permisos para registrar movimientos en ${upClean}`, 'error');
+    const isAdmin = (currentUser.role || '').trim().toLowerCase() === 'admin';
+    const cleanUp = trans.up.trim().toUpperCase().replace(/^UP\s+/, '');
+    const upToDisplay = `UP ${cleanUp}`;
+
+    // Admin users can unconditionally make movements in ANY UP
+    if (!isAdmin && !isGlobalAccess && !isUpAuthorized(cleanUp)) {
+      showToast(`No tienes permisos para registrar movimientos en ${upToDisplay}`, 'error');
       return false;
     }
 
-    // Validation for Salida: UP stock check
+    const cleanItemId = trans.itemId.trim().toUpperCase();
+    const currentItem = inventario.find(i => i.id.trim().toUpperCase() === cleanItemId);
+    if (!currentItem) {
+      showToast(`El producto "${trans.itemId}" no existe en el catálogo`, 'error');
+      return false;
+    }
+
+    const parsedQty = Number(trans.qty);
+    if (isNaN(parsedQty) || parsedQty <= 0) {
+      showToast('La cantidad debe ser un número mayor a cero', 'warning');
+      return false;
+    }
+
+    // Validation for Salida: UP stock check using cleanUp and all aliases
     if (trans.tipo === 'salida') {
-      const currentItem = inventario.find(i => i.id === trans.itemId);
-      const stockInUp = currentItem?.upStock[trans.up] || 0;
-      if (trans.qty > stockInUp) {
-        showToast(`Stock insuficiente en ${trans.up}. Disponible: ${stockInUp.toLocaleString()}`, 'error');
+      const stockInUp = currentItem.upStock[cleanUp] ??
+                        currentItem.upStock[`UP ${cleanUp}`] ??
+                        currentItem.upStock[trans.up] ??
+                        0;
+      if (parsedQty > stockInUp) {
+        showToast(`Stock insuficiente en ${upToDisplay}. Existencias disponibles: ${stockInUp.toLocaleString()} PZ`, 'error');
         return false;
       }
     }
 
     const idDoc = Date.now().toString(36) + Math.random().toString(36).substring(2, 7);
     const newTrans: Transaccion = {
-      ...trans,
-      up: upClean,
+      tipo: trans.tipo,
+      itemId: cleanItemId,
+      qty: parsedQty,
+      up: cleanUp,
+      fecha: trans.fecha || new Date().toISOString().split('T')[0],
+      notas: (trans.notas || '').trim(),
       idDoc,
       usuario: currentUser.username,
       timestamp: Date.now()
@@ -1049,12 +1117,25 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    showToast(`${trans.tipo === 'entrada' ? 'Recepción' : 'Despacho'} registrado con éxito en ${upClean}`, 'success');
+    showToast(
+      `${trans.tipo === 'entrada' ? 'Recepción (Entrada)' : 'Despacho (Salida)'} de ${parsedQty.toLocaleString()} PZ registrada con éxito en ${upToDisplay}`,
+      'success'
+    );
     return true;
   };
 
   // Delete Transaction
   const deleteTransaction = async (idDoc: string): Promise<boolean> => {
+    // Save to deleted IDs to prevent snapshot resurrection
+    try {
+      const savedDeleted = localStorage.getItem('invDeletedTrans_Pro');
+      const parsed = savedDeleted ? JSON.parse(savedDeleted) : [];
+      const updatedDeleted = Array.from(new Set([...(Array.isArray(parsed) ? parsed : []), idDoc]));
+      localStorage.setItem('invDeletedTrans_Pro', JSON.stringify(updatedDeleted));
+    } catch {
+      // Ignore
+    }
+
     setTransacciones(prev => {
       const updated = prev.filter(t => t.idDoc !== idDoc);
       localStorage.setItem('invTrans_Pro', JSON.stringify(updated));
@@ -1077,6 +1158,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Delete Multiple Transactions
   const deleteMultipleTransactions = async (idDocs: string[]): Promise<boolean> => {
     if (idDocs.length === 0) return true;
+
+    // Save to deleted IDs to prevent snapshot resurrection
+    try {
+      const savedDeleted = localStorage.getItem('invDeletedTrans_Pro');
+      const parsed = savedDeleted ? JSON.parse(savedDeleted) : [];
+      const updatedDeleted = Array.from(new Set([...(Array.isArray(parsed) ? parsed : []), ...idDocs]));
+      localStorage.setItem('invDeletedTrans_Pro', JSON.stringify(updatedDeleted));
+    } catch {
+      // Ignore
+    }
 
     const toDeleteSet = new Set(idDocs);
     setTransacciones(prev => {
@@ -1287,22 +1378,22 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return false;
     }
 
-    const clean = upNameToDelete.trim().toUpperCase();
+    const clean = upNameToDelete.trim().toUpperCase().replace(/^UP\s+/, '');
 
     // Check if in use
-    const hasMovements = transacciones.some(t => t.up.toUpperCase() === clean);
+    const hasMovements = transacciones.some(t => (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === clean);
     if (hasMovements) {
-      showToast(`No se puede eliminar "${clean}": tiene movimientos registrados en el historial.`, 'error');
+      showToast(`No se puede eliminar "UP ${clean}": tiene movimientos registrados en el historial.`, 'error');
       return false;
     }
 
-    const hasUsers = usuarios.some(u => u.up.toUpperCase() === clean);
+    const hasUsers = usuarios.some(u => (u.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === clean);
     if (hasUsers) {
-      showToast(`No se puede eliminar "${clean}": hay usuarios asignados a esta sede.`, 'error');
+      showToast(`No se puede eliminar "UP ${clean}": hay usuarios asignados a esta sede.`, 'error');
       return false;
     }
 
-    const updated = ups.filter(u => u.toUpperCase() !== clean);
+    const updated = ups.filter(u => u.trim().toUpperCase().replace(/^UP\s+/, '') !== clean);
     setUps(updated);
     localStorage.setItem('invUps_Pro', JSON.stringify(updated));
 

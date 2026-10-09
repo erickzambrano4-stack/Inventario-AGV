@@ -137,13 +137,15 @@ export const ReportModal: React.FC<ReportModalProps> = ({
 
     if (reportType === 'historial') {
       let filtered = [...transacciones];
+      const normEffective = (effectiveUp || '').trim().toUpperCase().replace(/^UP\s+/, '');
 
       if (!isGlobalAccess) {
-        filtered = filtered.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
+        const allowedNorm = userAllowedUps.map(u => u.trim().toUpperCase().replace(/^UP\s+/, ''));
+        filtered = filtered.filter(t => allowedNorm.includes((t.up || '').trim().toUpperCase().replace(/^UP\s+/, '')));
       }
 
       if (effectiveUp !== 'all') {
-        filtered = filtered.filter(t => t.up.toUpperCase() === effectiveUp.toUpperCase());
+        filtered = filtered.filter(t => (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === normEffective);
       }
 
       if (transactionType !== 'all') {

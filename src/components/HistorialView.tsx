@@ -106,16 +106,20 @@ export const HistorialView: React.FC = () => {
   // Base authorized transactions
   const authorizedTransactions = useMemo(() => {
     if (isGlobalAccess) return transacciones;
-    return transacciones.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
+    const allowedNorm = userAllowedUps.map(u => u.trim().toUpperCase().replace(/^UP\s+/, ''));
+    return transacciones.filter(t => allowedNorm.includes((t.up || '').trim().toUpperCase().replace(/^UP\s+/, '')));
   }, [transacciones, isGlobalAccess, userAllowedUps]);
 
   // Filtered transactions
   const filtered = useMemo(() => {
+    const normFilter = (upFilter || '').trim().toUpperCase().replace(/^UP\s+/, '');
+
     return authorizedTransactions.filter(t => {
       const matchType = typeFilter === 'todos' ? true : t.tipo === typeFilter;
+      const normTUp = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '');
       const matchUp = (upFilter === 'todos' && isGlobalAccess)
         ? true
-        : t.up.trim().toUpperCase() === upFilter.trim().toUpperCase();
+        : normTUp === normFilter;
 
       const matchUser = userFilter === 'todos'
         ? true

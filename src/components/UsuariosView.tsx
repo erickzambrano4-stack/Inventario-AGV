@@ -67,10 +67,11 @@ export const UsuariosView: React.FC = () => {
   // Statistics per UP
   const upStats = useMemo(() => {
     return ups.map(upName => {
-      const usersInUp = usuarios.filter(u => u.up.toUpperCase() === upName.toUpperCase()).length;
-      const itemsWithStock = inventario.filter(i => (i.upStock[upName] || 0) > 0).length;
-      const movementsCount = transacciones.filter(t => t.up.toUpperCase() === upName.toUpperCase()).length;
-      const responsablesCount = responsables.filter(r => r.up.toUpperCase() === upName.toUpperCase() && r.activo).length;
+      const cleanTarget = upName.trim().toUpperCase().replace(/^UP\s+/, '');
+      const usersInUp = usuarios.filter(u => (u.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === cleanTarget).length;
+      const itemsWithStock = inventario.filter(i => ((i.upStock[upName] ?? i.upStock[cleanTarget]) || 0) > 0).length;
+      const movementsCount = transacciones.filter(t => (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === cleanTarget).length;
+      const responsablesCount = responsables.filter(r => (r.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === cleanTarget && r.activo).length;
       const isDeletable = usersInUp === 0 && movementsCount === 0 && responsablesCount === 0;
 
       return {

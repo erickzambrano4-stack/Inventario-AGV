@@ -155,9 +155,12 @@ export const DashboardView: React.FC = () => {
   const dashboardStats = useMemo(() => {
     const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
     const isFilteredByUp = effectiveUp !== 'all' || !isGlobalAccess;
+    const normEffective = (effectiveUp || '').trim().toUpperCase().replace(/^UP\s+/, '');
 
     const withStockGlobal = inventario.filter(i => i.stockTotal > 0).length;
-    const withStockUp = inventario.filter(i => (i.upStock[effectiveUp] || 0) > 0).length;
+    const withStockUp = inventario.filter(
+      i => ((i.upStock[effectiveUp] ?? i.upStock[normEffective]) || 0) > 0
+    ).length;
 
     // Filter movements to users using the application
     const scopedTransacciones = transacciones.filter(t => {
@@ -184,14 +187,15 @@ export const DashboardView: React.FC = () => {
     }
 
     const currentTargetUp = effectiveUp;
+    const normTarget = normEffective;
     const entradasInUp = scopedTransacciones.filter(
-      t => t.tipo === 'entrada' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
+      t => t.tipo === 'entrada' && (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === normTarget
     ).length;
     const salidasInUp = scopedTransacciones.filter(
-      t => t.tipo === 'salida' && t.up.toUpperCase() === currentTargetUp.toUpperCase()
+      t => t.tipo === 'salida' && (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === normTarget
     ).length;
     const alertasInUp = inventario.filter(
-      i => (i.upStock[currentTargetUp] || 0) <= (i.reorden || 0)
+      i => ((i.upStock[currentTargetUp] ?? i.upStock[normTarget]) || 0) <= (i.reorden || 0)
     ).length;
 
     return {
@@ -202,7 +206,7 @@ export const DashboardView: React.FC = () => {
       totalSalidas: salidasInUp,
       alertas: alertasInUp,
       isUpFiltered: true,
-      upName: currentTargetUp
+      upName: currentTargetUp.startsWith('UP ') ? currentTargetUp : `UP ${currentTargetUp}`
     };
   }, [selectedUp, isGlobalAccess, primaryUp, stats, inventario, transacciones, onlyWithStock, userScope]);
 
@@ -240,10 +244,14 @@ export const DashboardView: React.FC = () => {
     // 2. Aggregate transactions
     const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
     const isFilteredByUp = effectiveUp !== 'all' || !isGlobalAccess;
+    const normEffective = (effectiveUp || '').trim().toUpperCase().replace(/^UP\s+/, '');
 
     transacciones.forEach(t => {
-      if (isFilteredByUp && t.up.toUpperCase() !== effectiveUp.toUpperCase()) {
-        return;
+      if (isFilteredByUp) {
+        const normTUp = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '');
+        if (normTUp !== normEffective) {
+          return;
+        }
       }
       const uKey = (t.usuario || 'desconocido').trim().toLowerCase();
       let record = userMap.get(uKey);
@@ -286,10 +294,14 @@ export const DashboardView: React.FC = () => {
   const recentMovements = useMemo(() => {
     const effectiveUp = (!isGlobalAccess && selectedUp === 'all') ? primaryUp : selectedUp;
     const isFilteredByUp = effectiveUp !== 'all' || !isGlobalAccess;
+    const normEffective = (effectiveUp || '').trim().toUpperCase().replace(/^UP\s+/, '');
 
     return transacciones
       .filter(t => {
-        if (isFilteredByUp && t.up.toUpperCase() !== effectiveUp.toUpperCase()) return false;
+        if (isFilteredByUp) {
+          const normTUp = (t.up || '').trim().toUpperCase().replace(/^UP\s+/, '');
+          if (normTUp !== normEffective) return false;
+        }
         if (userScope !== 'activos' && (t.usuario || '').toLowerCase() !== userScope.toLowerCase()) return false;
         return true;
       })
