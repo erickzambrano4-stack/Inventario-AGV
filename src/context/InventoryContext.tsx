@@ -430,10 +430,26 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               idDoc: docSnap.id
             });
           });
-          // Sort by timestamp descending so all devices see the newest transactions
-          remoteTrans.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          setTransacciones(remoteTrans);
-          localStorage.setItem('invTrans_Pro', JSON.stringify(remoteTrans));
+
+          setTransacciones(prevLocal => {
+            const transMap = new Map<string, Transaccion>();
+            // Remote transactions are authoritative
+            remoteTrans.forEach(t => transMap.set(t.idDoc, t));
+            // Keep local transactions that haven't synced to Firestore yet
+            prevLocal.forEach(localT => {
+              if (!transMap.has(localT.idDoc) && !isDemoItem(localT.itemId)) {
+                transMap.set(localT.idDoc, localT);
+                if (db) {
+                  setDoc(doc(db, 'transacciones', localT.idDoc), localT).catch(console.warn);
+                }
+              }
+            });
+            const mergedList = Array.from(transMap.values());
+            // Sort by timestamp descending
+            mergedList.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            localStorage.setItem('invTrans_Pro', JSON.stringify(mergedList));
+            return mergedList;
+          });
           setLastSyncTime(new Date());
         },
         error => {
@@ -542,13 +558,35 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // 7. Responsables de Almacén Listener
       unsubResponsables = onSnapshot(
         doc(db, 'configuracion', 'responsables'),
-        docSnap => {
+        async docSnap => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            if (Array.isArray(data?.responsables)) {
-              setResponsables(data.responsables);
-              localStorage.setItem('invResponsables_Pro', JSON.stringify(data.responsables));
+            if (Array.isArray(data?.responsables) && data.responsables.length > 0) {
+              setResponsables(prev => {
+                const map = new Map<string, ResponsableAlmacen>();
+                // Keep local first
+                prev.forEach(r => map.set(r.id, r));
+                // Remote overrides or adds
+                data.responsables.forEach((r: ResponsableAlmacen) => map.set(r.id, r));
+                const merged = Array.from(map.values());
+                localStorage.setItem('invResponsables_Pro', JSON.stringify(merged));
+                return merged;
+              });
               setLastSyncTime(new Date());
+            } else {
+              // Remote document exists but is empty: seed with local data
+              const saved = localStorage.getItem('invResponsables_Pro');
+              const toSeed = saved ? JSON.parse(saved) : INITIAL_RESPONSABLES;
+              if (Array.isArray(toSeed) && toSeed.length > 0 && db) {
+                setDoc(doc(db, 'configuracion', 'responsables'), { responsables: toSeed }, { merge: true }).catch(console.warn);
+              }
+            }
+          } else {
+            // Document does not exist yet: seed with local/initial data
+            const saved = localStorage.getItem('invResponsables_Pro');
+            const toSeed = saved ? JSON.parse(saved) : INITIAL_RESPONSABLES;
+            if (Array.isArray(toSeed) && toSeed.length > 0 && db) {
+              setDoc(doc(db, 'configuracion', 'responsables'), { responsables: toSeed }, { merge: true }).catch(console.warn);
             }
           }
         },
@@ -595,6 +633,9 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       await setDoc(doc(db, 'configuracion', 'general'), appSettings, { merge: true });
       await setDoc(doc(db, 'configuracion', 'locations'), { ups }, { merge: true });
       await setDoc(doc(db, 'configuracion', 'responsables'), { responsables }, { merge: true });
+      for (const resp of responsables) {
+        await setDoc(doc(db, 'responsables', resp.id), resp, { merge: true });
+      }
       for (const sol of solicitudes) {
         await setDoc(doc(db, 'solicitudes', sol.id), sol, { merge: true });
       }
@@ -993,7 +1034,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       timestamp: Date.now()
     };
 
-    setTransacciones(prev => [newTrans, ...prev]);
+    setTransacciones(prev => {
+      const updated = [newTrans, ...prev];
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updated));
+      return updated;
+    });
 
     if (db) {
       try {
@@ -1010,7 +1055,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Delete Transaction
   const deleteTransaction = async (idDoc: string): Promise<boolean> => {
-    setTransacciones(prev => prev.filter(t => t.idDoc !== idDoc));
+    setTransacciones(prev => {
+      const updated = prev.filter(t => t.idDoc !== idDoc);
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updated));
+      return updated;
+    });
 
     if (db) {
       try {
@@ -1030,7 +1079,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (idDocs.length === 0) return true;
 
     const toDeleteSet = new Set(idDocs);
-    setTransacciones(prev => prev.filter(t => !toDeleteSet.has(t.idDoc)));
+    setTransacciones(prev => {
+      const updated = prev.filter(t => !toDeleteSet.has(t.idDoc));
+      localStorage.setItem('invTrans_Pro', JSON.stringify(updated));
+      return updated;
+    });
 
     if (db) {
       try {
@@ -1280,10 +1333,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Configuración del sistema guardada', 'success');
   };
 
-  // Add a new Responsable de Almacén - Admin Only
+  // Add a new Responsable de Almacén - Accessible to supervisors and admins
   const addResponsable = async (data: Omit<ResponsableAlmacen, 'id' | 'fechaCreacion'>): Promise<boolean> => {
-    if (!currentUser || currentUser.role !== 'admin') {
-      showToast('Solo los administradores pueden registrar responsables de almacén', 'error');
+    if (!currentUser) {
+      showToast('Debes iniciar sesión para registrar responsables de almacén', 'error');
       return false;
     }
 
@@ -1293,12 +1346,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return false;
     }
 
+    const cleanUp = data.up.trim().toUpperCase().replace(/^UP\s+/, '');
+    if (!isGlobalAccess && !isUpAuthorized(cleanUp)) {
+      showToast(`No tienes permisos para registrar responsables en la UP ${cleanUp}`, 'error');
+      return false;
+    }
+
     const newResp: ResponsableAlmacen = {
       ...data,
       id: 'resp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       nombre: cleanNombre,
       cargo: data.cargo.trim() || 'Encargado de Almacén',
-      up: data.up.trim().toUpperCase(),
+      up: cleanUp,
       fechaCreacion: new Date().toISOString()
     };
 
@@ -1308,7 +1367,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (db) {
       try {
-        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        await Promise.all([
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
+          setDoc(doc(db, 'responsables', newResp.id), newResp, { merge: true })
+        ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
         handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
@@ -1319,10 +1381,18 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return true;
   };
 
-  // Update Responsable de Almacén - Admin Only
+  // Update Responsable de Almacén
   const updateResponsable = async (id: string, updates: Partial<ResponsableAlmacen>): Promise<boolean> => {
-    if (!currentUser || currentUser.role !== 'admin') {
-      showToast('Solo los administradores pueden editar responsables', 'error');
+    if (!currentUser) {
+      showToast('Debes iniciar sesión para editar responsables', 'error');
+      return false;
+    }
+
+    const target = responsables.find(r => r.id === id);
+    if (!target) return false;
+
+    if (!isGlobalAccess && !isUpAuthorized(target.up)) {
+      showToast(`No tienes permisos para editar responsables en la UP ${target.up}`, 'error');
       return false;
     }
 
@@ -1332,7 +1402,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (db) {
       try {
-        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        const mergedObj = { ...target, ...updates };
+        await Promise.all([
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
+          setDoc(doc(db, 'responsables', id), mergedObj, { merge: true })
+        ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
         handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
@@ -1343,15 +1417,20 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return true;
   };
 
-  // Delete Responsable de Almacén - Admin Only
+  // Delete Responsable de Almacén
   const deleteResponsable = async (id: string): Promise<boolean> => {
-    if (!currentUser || currentUser.role !== 'admin') {
-      showToast('Solo los administradores pueden eliminar responsables', 'error');
+    if (!currentUser) {
+      showToast('Debes iniciar sesión para eliminar responsables', 'error');
       return false;
     }
 
     const target = responsables.find(r => r.id === id);
     if (!target) return false;
+
+    if (!isGlobalAccess && !isUpAuthorized(target.up)) {
+      showToast(`No tienes permisos para eliminar responsables en la UP ${target.up}`, 'error');
+      return false;
+    }
 
     // Check if responsible has issued documents
     const inUse = solicitudes.some(
@@ -1371,7 +1450,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (db) {
       try {
-        await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true });
+        await Promise.all([
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
+          deleteDoc(doc(db, 'responsables', id)).catch(() => {})
+        ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
         handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');

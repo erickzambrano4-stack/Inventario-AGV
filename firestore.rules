@@ -99,6 +99,12 @@ service cloud.firestore {
       allow write: if isValidId(docId) && docId in ['general', 'locations', 'responsables'];
     }
 
+    // 5b. Colección directa de Responsables de Almacén por UP
+    match /responsables/{respId} {
+      allow get, list: if true;
+      allow write: if isValidId(respId);
+    }
+
     // 6. Test de Conectividad en Tiempo Real
     match /_connection_test/{docId} {
       allow get, list, write: if isValidId(docId);

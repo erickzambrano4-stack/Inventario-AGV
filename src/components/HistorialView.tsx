@@ -42,22 +42,39 @@ export const HistorialView: React.FC = () => {
   const [upFilter, setUpFilter] = useState<string>(() => {
     return isGlobalAccess ? 'todos' : primaryUp;
   });
-  const [userFilter, setUserFilter] = useState<string>(() => {
-    if (currentUser?.role === 'supervisor') {
-      return currentUser.username;
-    }
-    return 'todos';
-  });
+  const [userFilter, setUserFilter] = useState<string>('todos');
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(25);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
 
-  // Set of valid application usernames currently using the application
-  const validAppUsernames = useMemo(() => {
-    return new Set(usuarios.map(u => u.username.toLowerCase()));
-  }, [usuarios]);
+  // All unique users appearing in either registered users or transaction logs
+  const allUniqueUsers = useMemo(() => {
+    const map = new Map<string, { username: string; displayName: string; role?: string; up?: string }>();
+    usuarios.forEach(u => {
+      map.set(u.username.toLowerCase(), {
+        username: u.username,
+        displayName: u.name || u.username,
+        role: u.role,
+        up: u.up
+      });
+    });
+    transacciones.forEach(t => {
+      if (t.usuario) {
+        const key = t.usuario.trim().toLowerCase();
+        if (!map.has(key)) {
+          map.set(key, {
+            username: t.usuario,
+            displayName: t.usuario,
+            role: 'usuario',
+            up: t.up
+          });
+        }
+      }
+    });
+    return Array.from(map.values());
+  }, [usuarios, transacciones]);
 
   // Sync upFilter if permissions change
   React.useEffect(() => {
@@ -86,17 +103,11 @@ export const HistorialView: React.FC = () => {
     return Array.from(upsSet);
   }, [ups, transacciones, isGlobalAccess, userAllowedUps]);
 
-  // Base authorized transactions - restricted to registered users using the application
+  // Base authorized transactions
   const authorizedTransactions = useMemo(() => {
-    const appTransactions = transacciones.filter(t => {
-      const u = (t.usuario || '').trim().toLowerCase();
-      // Only include transactions made by users registered/using the application
-      return validAppUsernames.has(u) || u === 'admin' || (currentUser && u === currentUser.username.toLowerCase());
-    });
-
-    if (isGlobalAccess) return appTransactions;
-    return appTransactions.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
-  }, [transacciones, isGlobalAccess, userAllowedUps, validAppUsernames, currentUser]);
+    if (isGlobalAccess) return transacciones;
+    return transacciones.filter(t => userAllowedUps.includes((t.up || '').trim().toUpperCase()));
+  }, [transacciones, isGlobalAccess, userAllowedUps]);
 
   // Filtered transactions
   const filtered = useMemo(() => {
@@ -429,15 +440,15 @@ export const HistorialView: React.FC = () => {
               className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[150px] truncate"
               title="Filtrar por usuario que esté utilizando la aplicación"
             >
-              <option value="todos">Todos los usuarios ({usuarios.length})</option>
+              <option value="todos">Todos los usuarios ({allUniqueUsers.length})</option>
               {currentUser && (
                 <option value={currentUser.username}>
                   Mi usuario ({currentUser.name})
                 </option>
               )}
-              {usuarios.map(u => (
+              {allUniqueUsers.map(u => (
                 <option key={u.username} value={u.username}>
-                  {u.name} ({u.role.toUpperCase()} - {u.up})
+                  {u.displayName} ({u.role?.toUpperCase() || 'USUARIO'}{u.up ? ` - ${u.up}` : ''})
                 </option>
               ))}
             </select>
