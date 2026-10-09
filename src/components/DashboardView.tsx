@@ -58,6 +58,8 @@ export const DashboardView: React.FC = () => {
     setActiveTab
   } = useInventory();
 
+  const isAdmin = currentUser?.role === 'admin';
+
   // UP Filter state for the Dashboard - restricted users default to their authorized UP
   const [selectedUp, setSelectedUp] = useState<string>(() => {
     return isGlobalAccess ? 'all' : primaryUp;
@@ -798,29 +800,31 @@ export const DashboardView: React.FC = () => {
             </button>
           )}
 
-          {/* Active User Filter */}
-          <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-            <span className="font-semibold text-gray-500">Usuario:</span>
-            <select
-              value={userScope}
-              onChange={e => setUserScope(e.target.value)}
-              className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[150px] truncate"
-              title="Mostrar información del usuario que esté utilizando la aplicación"
-            >
-              <option value="activos">Todos los usuarios ({allUniqueUsers.length})</option>
-              {currentUser && (
-                <option value={currentUser.username}>
-                  Mi usuario ({currentUser.name})
-                </option>
-              )}
-              {allUniqueUsers.map(u => (
-                <option key={u.username} value={u.username}>
-                  {u.displayName} ({u.role?.toUpperCase() || 'USUARIO'})
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Active User Filter - Solo para Administradores */}
+          {isAdmin && (
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-gray-200 px-3 py-1.5 rounded-xl text-xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span className="font-semibold text-gray-500">Usuario:</span>
+              <select
+                value={userScope}
+                onChange={e => setUserScope(e.target.value)}
+                className="bg-transparent font-bold text-gray-800 outline-none cursor-pointer max-w-[150px] truncate"
+                title="Mostrar información del usuario que esté utilizando la aplicación"
+              >
+                <option value="activos">Todos los usuarios ({allUniqueUsers.length})</option>
+                {currentUser && (
+                  <option value={currentUser.username}>
+                    Mi usuario ({currentUser.name})
+                  </option>
+                )}
+                {allUniqueUsers.map(u => (
+                  <option key={u.username} value={u.username}>
+                    {u.displayName} ({u.role?.toUpperCase() || 'USUARIO'})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <button
             type="button"
@@ -938,8 +942,9 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
-      {/* Activity and Movements Breakdown per User */}
-      <div className="bg-white border border-gray-100 rounded-3xl p-6 sm:p-7 shadow-sm space-y-6">
+      {/* Activity and Movements Breakdown per User (Solo administradores) */}
+      {isAdmin && (
+        <div className="bg-white border border-gray-100 rounded-3xl p-6 sm:p-7 shadow-sm space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-blue-50 text-blue-700 rounded-2xl border border-blue-100">
@@ -1167,6 +1172,7 @@ export const DashboardView: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
 
       {/* Main Stock Chart: Horizontal & Vertical Interactive Layout */}
       <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-5">
