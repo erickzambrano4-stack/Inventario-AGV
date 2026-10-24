@@ -14,7 +14,11 @@ import {
   Lock,
   ShieldCheck,
   Search,
-  CheckCircle2
+  CheckCircle2,
+  Sparkles,
+  X,
+  LayoutDashboard,
+  PlusCircle
 } from 'lucide-react';
 
 interface TransactionViewProps {
@@ -69,6 +73,22 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
   const [notas, setNotas] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Confirmation Modal state
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+
+  // Success summary banner state
+  const [lastConfirmedResult, setLastConfirmedResult] = useState<{
+    itemId: string;
+    desc: string;
+    unidad: string;
+    qty: number;
+    up: string;
+    newUpStock: number;
+    newGlobalStock: number;
+    tipo: 'entrada' | 'salida';
+    timestamp: number;
+  } | null>(null);
+
   // Sync UP selection if user scope changes
   useEffect(() => {
     if (!hasGlobalUpAccess) {
@@ -100,6 +120,8 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
     return inventario.find(i => i.id.trim().toUpperCase() === clean);
   }, [inventario, itemId]);
 
+  const itemUnit = selectedItem?.unidad || 'PZ';
+
   const cleanCurrentUp = useMemo(() => {
     return (up || '').trim().toUpperCase().replace(/^UP\s+/, '');
   }, [up]);
@@ -118,7 +140,20 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
   const isQtyValid = !isNaN(parsedQtyNum) && parsedQtyNum > 0;
   const isInsufficientStock = !isEntrada && isQtyValid && parsedQtyNum > stockInSelectedUp;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Real projection calculations
+  const projectedUpStock = useMemo(() => {
+    if (!isQtyValid) return stockInSelectedUp;
+    return isEntrada ? stockInSelectedUp + parsedQtyNum : stockInSelectedUp - parsedQtyNum;
+  }, [isQtyValid, isEntrada, stockInSelectedUp, parsedQtyNum]);
+
+  const projectedGlobalStock = useMemo(() => {
+    const currentGlobal = selectedItem?.stockTotal ?? 0;
+    if (!isQtyValid) return currentGlobal;
+    return isEntrada ? currentGlobal + parsedQtyNum : currentGlobal - parsedQtyNum;
+  }, [isQtyValid, isEntrada, selectedItem, parsedQtyNum]);
+
+  // Validate form and open confirmation modal
+  const handleOpenConfirm = (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedItem) {
@@ -142,33 +177,78 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
       return;
     }
 
-    // Salida stock validation
+  // Salida stock validation
     if (!isEntrada && parsedQtyNum > stockInSelectedUp) {
       showToast(
-        `Stock insuficiente en UP ${cleanCurrentUp}. Existencias disponibles: ${stockInSelectedUp.toLocaleString()} PZ`,
+        `Stock insuficiente en UP ${cleanCurrentUp}. Existencias disponibles: ${stockInSelectedUp.toLocaleString()} ${itemUnit}`,
         'error'
       );
       return;
     }
 
+    // Form is valid, prompt confirmation modal
+    setIsConfirmModalOpen(true);
+  };
+
+  // Reset confirmation banner when changing item, UP, or typing a new quantity
+  useEffect(() => {
+    if (lastConfirmedResult) {
+      setLastConfirmedResult(null);
+    }
+  }, [itemId, cleanCurrentUp]);
+
+  useEffect(() => {
+    if (lastConfirmedResult && qty !== '') {
+      setLastConfirmedResult(null);
+    }
+  }, [qty]);
+
+  // Execute confirmed transaction
+  const handleExecuteTransaction = async () => {
+    if (!selectedItem || !isQtyValid || !cleanCurrentUp) return;
+
+    // Snapshot exact values at confirmation time to prevent post-mutation double math
+    const appliedItemId = selectedItem.id;
+    const appliedDesc = selectedItem.desc;
+    const appliedUnit = itemUnit;
+    const appliedQty = parsedQtyNum;
+    const appliedUp = cleanCurrentUp;
+    const appliedTipo = tipo;
+    const baseUpStock = stockInSelectedUp;
+    const baseGlobalStock = selectedItem.stockTotal;
+    const calculatedNewUpStock = isEntrada ? baseUpStock + appliedQty : baseUpStock - appliedQty;
+    const calculatedNewGlobalStock = isEntrada ? baseGlobalStock + appliedQty : baseGlobalStock - appliedQty;
+
     setLoading(true);
+    setIsConfirmModalOpen(false);
 
     try {
       const ok = await addTransaction({
-        tipo,
-        itemId: selectedItem.id,
-        qty: parsedQtyNum,
-        up: cleanCurrentUp,
+        tipo: appliedTipo,
+        itemId: appliedItemId,
+        qty: appliedQty,
+        up: appliedUp,
         fecha,
         notas: notas.trim()
       });
 
       if (ok) {
-        setItemId('');
-        setItemSearch('');
+        // Clear inputs immediately so form and projection calculations are clean
         setQty('');
         setNotas('');
-        setActiveTab('historial');
+
+        // Set last confirmed result with exact pre-calculated post-transaction stock
+        setLastConfirmedResult({
+          itemId: appliedItemId,
+          desc: appliedDesc,
+          unidad: appliedUnit,
+          qty: appliedQty,
+          up: appliedUp,
+          newUpStock: calculatedNewUpStock,
+          newGlobalStock: calculatedNewGlobalStock,
+          tipo: appliedTipo,
+          timestamp: Date.now()
+        });
       }
     } finally {
       setLoading(false);
@@ -178,7 +258,101 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
   const todayStr = new Date().toISOString().split('T')[0];
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-3xl mx-auto space-y-5">
+      {/* Success Summary Banner */}
+      {lastConfirmedResult && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-3xl p-5 shadow-sm animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-emerald-200/70">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-600 text-white rounded-xl shadow-xs">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-black text-emerald-950 flex items-center gap-2">
+                  <span>¡{lastConfirmedResult.tipo === 'entrada' ? 'Entrada' : 'Salida'} Confirmada y Registrada!</span>
+                  <span className="px-2 py-0.2 rounded-full text-[10px] font-bold bg-emerald-200 text-emerald-900">
+                    En Vivo
+                  </span>
+                </h4>
+                <p className="text-xs text-emerald-800 mt-0.5">
+                  [{lastConfirmedResult.itemId}] {lastConfirmedResult.desc}
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setLastConfirmedResult(null)}
+              className="text-emerald-700 hover:text-emerald-900 p-1 rounded-lg hover:bg-emerald-100/60 self-start sm:self-auto transition"
+              title="Cerrar aviso"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 text-xs">
+            <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
+              <span className="text-[10px] font-semibold text-gray-500 uppercase block">
+                Cantidad Registrada:
+              </span>
+              <span className={`text-sm font-black ${lastConfirmedResult.tipo === 'entrada' ? 'text-emerald-700' : 'text-rose-700'}`}>
+                {lastConfirmedResult.tipo === 'entrada' ? '+' : '-'}{lastConfirmedResult.qty.toLocaleString()} {lastConfirmedResult.unidad}
+              </span>
+            </div>
+            <div className="bg-white p-2.5 rounded-xl border border-emerald-100 shadow-2xs">
+              <span className="text-[10px] font-semibold text-gray-500 uppercase block">
+                Nuevo Stock en UP {lastConfirmedResult.up}:
+              </span>
+              <span className="text-sm font-black text-emerald-900">
+                {lastConfirmedResult.newUpStock.toLocaleString()} {lastConfirmedResult.unidad}
+              </span>
+            </div>
+            <div className="bg-white p-2.5 rounded-xl border border-blue-100 shadow-2xs">
+              <span className="text-[10px] font-semibold text-gray-500 uppercase block">
+                Nuevo Stock Global:
+              </span>
+              <span className="text-sm font-black text-blue-900">
+                {lastConfirmedResult.newGlobalStock.toLocaleString()} {lastConfirmedResult.unidad}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-3">
+            <button
+              type="button"
+              onClick={() => {
+                setItemId('');
+                setItemSearch('');
+                setQty('');
+                setNotas('');
+                setLastConfirmedResult(null);
+              }}
+              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              <span>Registrar Otro Producto</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('historial')}
+              className="px-3.5 py-1.5 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs"
+            >
+              <History className="w-3.5 h-3.5 text-amber-600" />
+              <span>Ver en Historial</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('dashboard')}
+              className="px-3.5 py-1.5 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-2xs"
+            >
+              <LayoutDashboard className="w-3.5 h-3.5 text-blue-600" />
+              <span>Ver en Dashboard</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Card */}
       <div className="bg-white border border-gray-100 rounded-3xl shadow-sm overflow-hidden">
         {/* Header */}
         <div
@@ -208,7 +382,7 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
               </div>
               <p className="text-xs text-gray-500 mt-0.5">
                 {isEntrada
-                  ? 'Registra el ingreso de producto o insumo al almacén y actualiza el inventario en vivo'
+                  ? 'Registra el ingreso de producto al almacén con cálculo y proyección exacta de existencias'
                   : 'Registra el consumo o despacho de material verificando existencias de la UP'}
               </p>
             </div>
@@ -225,7 +399,7 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6">
+        <form onSubmit={handleOpenConfirm} className="p-6 sm:p-8 space-y-6">
           {/* Item Selector & Search */}
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -272,47 +446,40 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
                     <span className="text-gray-400 mx-1.5">•</span>
                     <span className="font-semibold text-gray-700">{selectedItem.desc}</span>
                   </div>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700 self-start sm:self-auto">
-                    {selectedItem.area || 'GENERAL'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
+                      {selectedItem.area || 'GENERAL'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                      Unidad: {itemUnit}
+                    </span>
+                  </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-0.5">
-                  <div className="flex items-center gap-3">
-                    <span className="text-blue-700 font-semibold">
-                      Stock Total Global: <strong>{selectedItem.stockTotal.toLocaleString()} PZ</strong>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {/* Stock en UP actual */}
+                  <div className="bg-white p-3 rounded-xl border border-slate-200/80 shadow-2xs">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase block">
+                      Existencias en UP {cleanCurrentUp}:
                     </span>
-                    <span className="text-slate-300">|</span>
                     <span
-                      className={`font-semibold ${
+                      className={`text-base font-black ${
                         stockInSelectedUp > 0 ? 'text-emerald-700' : 'text-amber-700'
                       }`}
                     >
-                      Stock en UP {cleanCurrentUp}: <strong>{stockInSelectedUp.toLocaleString()} PZ</strong>
+                      {stockInSelectedUp.toLocaleString()} {itemUnit}
                     </span>
                   </div>
 
-                  {/* Projected stock calculation */}
-                  {isQtyValid && (
-                    <div className="text-[11px] font-bold flex items-center gap-1.5">
-                      <span className="text-gray-500">Proyección:</span>
-                      {isEntrada ? (
-                        <span className="text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md">
-                          ➔ {(stockInSelectedUp + parsedQtyNum).toLocaleString()} PZ en UP {cleanCurrentUp}
-                        </span>
-                      ) : (
-                        <span
-                          className={`px-2 py-0.5 rounded-md ${
-                            isInsufficientStock
-                              ? 'text-rose-700 bg-rose-100'
-                              : 'text-blue-700 bg-blue-100/70'
-                          }`}
-                        >
-                          ➔ {(stockInSelectedUp - parsedQtyNum).toLocaleString()} PZ en UP {cleanCurrentUp}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {/* Stock Total Global */}
+                  <div className="bg-white p-3 rounded-xl border border-blue-100 shadow-2xs">
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase block">
+                      Existencias Consolidadas (Todas las UPs):
+                    </span>
+                    <span className="text-base font-black text-blue-700">
+                      {selectedItem.stockTotal.toLocaleString()} {itemUnit}
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
@@ -322,17 +489,17 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
             {/* Quantity */}
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-2">
-                Cantidad a {isEntrada ? 'Ingresar' : 'Despachar'} *
+                Cantidad a {isEntrada ? 'Ingresar' : 'Despachar'} ({itemUnit}) *
               </label>
               <div className="relative">
                 <Hash className="w-5 h-5 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="number"
-                  min="0.01"
-                  step="0.01"
+                  min="0.001"
+                  step="any"
                   value={qty}
                   onChange={e => setQty(e.target.value)}
-                  placeholder="0.00"
+                  placeholder={`0.00 ${itemUnit}`}
                   className={`w-full pl-11 pr-4 py-3 bg-gray-50 border rounded-xl text-sm font-semibold text-gray-900 focus:ring-2 focus:bg-white outline-none transition ${
                     isInsufficientStock
                       ? 'border-rose-400 focus:ring-rose-500 bg-rose-50/30'
@@ -348,13 +515,13 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
                     <p className="text-rose-600 font-bold flex items-center gap-1">
                       <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                       <span>
-                        Stock insuficiente: solo hay {stockInSelectedUp.toLocaleString()} PZ en UP {cleanCurrentUp}
+                        Stock insuficiente: solo hay {stockInSelectedUp.toLocaleString()} {itemUnit} en UP {cleanCurrentUp}
                       </span>
                     </p>
                   ) : (
                     <p className="text-gray-500">
                       Disponible para salida en UP {cleanCurrentUp}:{' '}
-                      <strong className="text-gray-800">{stockInSelectedUp.toLocaleString()} PZ</strong>
+                      <strong className="text-gray-800">{stockInSelectedUp.toLocaleString()} {itemUnit}</strong>
                     </p>
                   )}
                 </div>
@@ -424,6 +591,71 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
             </div>
           </div>
 
+          {/* DUAL PROJECTION BREAKDOWN (UP vs GLOBAL) */}
+          {isQtyValid && selectedItem && (
+            <div className={`p-4 rounded-2xl border text-xs animate-in fade-in duration-150 ${
+              isEntrada
+                ? 'bg-emerald-50/80 border-emerald-200'
+                : isInsufficientStock
+                ? 'bg-rose-50 border-rose-300'
+                : 'bg-blue-50/80 border-blue-200'
+            }`}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2.5 border-b border-gray-200/70">
+                <div className="flex items-center gap-2 font-bold text-gray-900 text-sm">
+                  <Sparkles className={`w-4 h-4 ${isEntrada ? 'text-emerald-600' : 'text-blue-600'}`} />
+                  <span>Proyección de Existencias tras {isEntrada ? 'Confirmar Entrada' : 'Confirmar Salida'}:</span>
+                </div>
+                <span className={`px-2.5 py-1 rounded-full font-black text-xs self-start sm:self-auto ${
+                  isEntrada
+                    ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                    : 'bg-rose-100 text-rose-800 border border-rose-300'
+                }`}>
+                  {isEntrada ? '+' : '-'}{parsedQtyNum.toLocaleString()} {itemUnit}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* 1. Proyección en UP */}
+                <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span className="font-semibold flex items-center gap-1 text-gray-800">
+                      <MapPin className="w-3.5 h-3.5 text-blue-500" />
+                      <span>Sede UP {cleanCurrentUp}</span>
+                    </span>
+                    <span className="text-gray-400">Actual: {stockInSelectedUp.toLocaleString()} {itemUnit}</span>
+                  </div>
+                  <div className="flex items-baseline justify-between pt-1 border-t border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-500">Saldo Proyectado UP:</span>
+                    <span className={`text-base font-black ${
+                      isEntrada ? 'text-emerald-700' : projectedUpStock < 0 ? 'text-rose-600' : 'text-blue-700'
+                    }`}>
+                      ➔ {projectedUpStock.toLocaleString()} {itemUnit}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. Proyección Global */}
+                <div className="bg-white p-3.5 rounded-xl border border-gray-200/80 shadow-2xs space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span className="font-semibold flex items-center gap-1 text-gray-800">
+                      <Package className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Consolidado Global</span>
+                    </span>
+                    <span className="text-gray-400">Actual: {selectedItem.stockTotal.toLocaleString()} {itemUnit}</span>
+                  </div>
+                  <div className="flex items-baseline justify-between pt-1 border-t border-gray-100">
+                    <span className="text-[10px] uppercase font-bold text-gray-500">Saldo Proyectado Global:</span>
+                    <span className={`text-base font-black ${
+                      isEntrada ? 'text-emerald-700' : 'text-blue-700'
+                    }`}>
+                      ➔ {projectedGlobalStock.toLocaleString()} {itemUnit}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Date */}
             <div>
@@ -467,7 +699,7 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
                 maxLength={300}
                 value={notas}
                 onChange={e => setNotas(e.target.value)}
-                placeholder="Ej. Llegada de lote 4410, factura 8820, material para empaque..."
+                placeholder="Ej. Factura 8820, lote 4410, proveedor, remisión..."
                 className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-600 focus:bg-white outline-none transition resize-none"
               />
             </div>
@@ -480,7 +712,7 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
           <div className="pt-2">
             <button
               type="submit"
-              disabled={loading || isInsufficientStock}
+              disabled={loading || isInsufficientStock || !selectedItem || !isQtyValid}
               className={`w-full py-4 px-6 rounded-2xl text-white font-bold text-base shadow-lg transition-all flex items-center justify-center gap-2.5 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
                 isEntrada
                   ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/30'
@@ -501,6 +733,151 @@ export const TransactionView: React.FC<TransactionViewProps> = ({ tipo }) => {
           </div>
         </form>
       </div>
+
+      {/* CONFIRMATION MODAL */}
+      {isConfirmModalOpen && selectedItem && (
+        <div className="fixed inset-0 z-[9990] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-6 sm:p-7 space-y-5">
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className={`p-3 rounded-2xl ${
+                    isEntrada ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                  }`}>
+                    {isEntrada ? <ArrowDownLeft className="w-6 h-6" /> : <ArrowUpRight className="w-6 h-6" />}
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-gray-900">
+                      ¿Confirmar {isEntrada ? 'Entrada' : 'Salida'} de Material?
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Revisa las cantidades y la proyección de existencias antes de guardar
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Movement Details */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3 text-xs">
+                <div className="flex items-start justify-between gap-2 border-b border-slate-200/60 pb-2">
+                  <span className="text-gray-500 font-semibold">Producto:</span>
+                  <div className="text-right">
+                    <span className="font-mono font-bold text-gray-900 block">{selectedItem.id}</span>
+                    <span className="text-gray-700 font-medium text-[11px] block">{selectedItem.desc}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-gray-500 font-semibold">Ubicación (Sede UP):</span>
+                  <span className="font-bold text-blue-900 bg-blue-100/70 px-2.5 py-0.5 rounded-lg">
+                    UP {cleanCurrentUp}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-gray-500 font-semibold">Cantidad a {isEntrada ? 'Ingresar' : 'Despachar'}:</span>
+                  <span className={`text-sm font-black ${isEntrada ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {isEntrada ? '+' : '-'}{parsedQtyNum.toLocaleString()} {itemUnit}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-b border-slate-200/60 pb-2">
+                  <span className="text-gray-500 font-semibold">Fecha de Movimiento:</span>
+                  <span className="font-medium text-gray-800">{fecha}</span>
+                </div>
+
+                {notas && (
+                  <div className="pt-1 text-[11px] text-gray-600">
+                    <span className="font-semibold text-gray-500 block mb-0.5">Notas:</span>
+                    <p className="italic bg-white p-2 rounded-lg border border-slate-200">{notas}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Projections in Modal */}
+              <div className={`${
+                isEntrada ? 'bg-emerald-50/70 border-emerald-200' : 'bg-rose-50/70 border-rose-200'
+              } border rounded-2xl p-4 text-xs space-y-2.5`}>
+                <div className={`flex items-center gap-1.5 font-black text-xs ${
+                  isEntrada ? 'text-emerald-950' : 'text-rose-950'
+                }`}>
+                  <Sparkles className={`w-3.5 h-3.5 ${isEntrada ? 'text-emerald-600' : 'text-rose-600'}`} />
+                  <span>Proyección Final tras Confirmación:</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className={`bg-white p-2.5 rounded-xl border ${
+                    isEntrada ? 'border-emerald-100' : 'border-rose-100'
+                  }`}>
+                    <span className="text-[10px] font-semibold text-gray-500 block">Saldo en UP {cleanCurrentUp}:</span>
+                    <div className="flex items-baseline justify-between mt-1">
+                      <span className="text-gray-400 line-through text-[11px]">
+                        {stockInSelectedUp.toLocaleString()}
+                      </span>
+                      <span className={`text-sm font-black ${
+                        isEntrada ? 'text-emerald-700' : projectedUpStock < 0 ? 'text-rose-600' : 'text-blue-700'
+                      }`}>
+                        ➔ {projectedUpStock.toLocaleString()} {itemUnit}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-2.5 rounded-xl border border-blue-100">
+                    <span className="text-[10px] font-semibold text-gray-500 block">Saldo Global Total:</span>
+                    <div className="flex items-baseline justify-between mt-1">
+                      <span className="text-gray-400 line-through text-[11px]">
+                        {selectedItem.stockTotal.toLocaleString()}
+                      </span>
+                      <span className={`text-sm font-black ${
+                        isEntrada ? 'text-emerald-700' : projectedGlobalStock < 0 ? 'text-rose-600' : 'text-blue-700'
+                      }`}>
+                        ➔ {projectedGlobalStock.toLocaleString()} {itemUnit}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Buttons */}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmModalOpen(false)}
+                  className="px-4 py-2.5 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold transition text-xs cursor-pointer"
+                >
+                  Regresar a Editar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExecuteTransaction}
+                  disabled={loading}
+                  className={`px-5 py-2.5 rounded-xl font-bold text-white text-xs shadow-md transition flex items-center gap-2 cursor-pointer ${
+                    isEntrada
+                      ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/30'
+                      : 'bg-rose-600 hover:bg-rose-700 shadow-rose-600/30'
+                  }`}
+                >
+                  {loading ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  <span>Sí, {isEntrada ? 'Confirmar Entrada' : 'Confirmar Salida'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

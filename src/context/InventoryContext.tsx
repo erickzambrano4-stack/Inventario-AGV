@@ -36,6 +36,43 @@ const DEFAULT_ITEMS: Item[] = [
 
 const isDemoItem = (id: string) => /^(AGR|EMP|SEG|FER|LIM|OF)-\d+$/.test(id);
 
+const cleanResponsableForFirestore = (r: ResponsableAlmacen): Record<string, any> => {
+  const docData: Record<string, any> = {
+    id: r.id,
+    nombre: (r.nombre || '').trim(),
+    cargo: (r.cargo || 'Encargado de Almacén').trim(),
+    up: (r.up || '').trim().toUpperCase().replace(/^UP\s+/, ''),
+    activo: r.activo !== false
+  };
+  if (r.telefono && r.telefono.trim()) {
+    docData.telefono = r.telefono.trim();
+  }
+  if (r.email && r.email.trim()) {
+    docData.email = r.email.trim();
+  }
+  if (r.notas && r.notas.trim()) {
+    docData.notas = r.notas.trim();
+  }
+  if (r.fechaCreacion) {
+    docData.fechaCreacion = r.fechaCreacion;
+  }
+  return docData;
+};
+
+const parseResponsableDoc = (id: string, data: any): ResponsableAlmacen => {
+  return {
+    id: data.id || id,
+    nombre: (data.nombre || '').trim(),
+    cargo: (data.cargo || 'Encargado de Almacén').trim(),
+    up: (data.up || '').trim().toUpperCase().replace(/^UP\s+/, ''),
+    telefono: data.telefono || '',
+    email: data.email || '',
+    notas: data.notas || '',
+    activo: data.activo !== false,
+    fechaCreacion: data.fechaCreacion || ''
+  };
+};
+
 const DEFAULT_USERS_RAW = [
   { username: 'admin', password: 'admin123', name: 'Administrador Principal', role: 'admin' as const, up: 'ALL', allowedUps: ['ALL'] },
   { username: 'supervisor1', password: '123456', name: 'Supervisor de Sede', role: 'supervisor' as const, up: 'LUPITA', allowedUps: ['LUPITA'] },
@@ -248,18 +285,30 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   );
 
   const [responsables, setResponsables] = useState<ResponsableAlmacen[]>(() => {
+    let deletedRespIds = new Set<string>();
+    try {
+      const savedDeleted = localStorage.getItem('invDeletedResp_Pro');
+      if (savedDeleted) {
+        const parsed = JSON.parse(savedDeleted);
+        if (Array.isArray(parsed)) deletedRespIds = new Set(parsed);
+      }
+    } catch {
+      // Ignore
+    }
+
     const saved = localStorage.getItem('invResponsables_Pro');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const valid = parsed.filter(r => r && r.id && !deletedRespIds.has(r.id));
+          if (valid.length > 0) return valid;
         }
       } catch {
         // Fallback
       }
     }
-    return INITIAL_RESPONSABLES;
+    return INITIAL_RESPONSABLES.filter(r => !deletedRespIds.has(r.id));
   });
 
   const [solicitudes, setSolicitudes] = useState<SolicitudInsumo[]>(() => {
@@ -582,42 +631,79 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       );
 
       // 7. Responsables de Almacén Listener
+      let deletedRespIds = new Set<string>();
+      try {
+        const savedDeleted = localStorage.getItem('invDeletedResp_Pro');
+        if (savedDeleted) {
+          const parsed = JSON.parse(savedDeleted);
+          if (Array.isArray(parsed)) {
+            deletedRespIds = new Set(parsed);
+          }
+        }
+      } catch {
+        // Ignore
+      }
+
       unsubResponsables = onSnapshot(
-        doc(db, 'configuracion', 'responsables'),
-        async docSnap => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            if (Array.isArray(data?.responsables) && data.responsables.length > 0) {
-              setResponsables(prev => {
-                const map = new Map<string, ResponsableAlmacen>();
-                // Keep local first
-                prev.forEach(r => map.set(r.id, r));
-                // Remote overrides or adds
-                data.responsables.forEach((r: ResponsableAlmacen) => map.set(r.id, r));
-                const merged = Array.from(map.values());
-                localStorage.setItem('invResponsables_Pro', JSON.stringify(merged));
-                return merged;
-              });
-              setLastSyncTime(new Date());
-            } else {
-              // Remote document exists but is empty: seed with local data
-              const saved = localStorage.getItem('invResponsables_Pro');
-              const toSeed = saved ? JSON.parse(saved) : INITIAL_RESPONSABLES;
-              if (Array.isArray(toSeed) && toSeed.length > 0 && db) {
-                setDoc(doc(db, 'configuracion', 'responsables'), { responsables: toSeed }, { merge: true }).catch(console.warn);
-              }
+        collection(db, 'responsables'),
+        collectionSnap => {
+          const remoteList: ResponsableAlmacen[] = [];
+          collectionSnap.forEach(d => {
+            if (!deletedRespIds.has(d.id)) {
+              remoteList.push(parseResponsableDoc(d.id, d.data()));
             }
+          });
+
+          if (remoteList.length > 0) {
+            setResponsables(remoteList);
+            localStorage.setItem('invResponsables_Pro', JSON.stringify(remoteList));
+            setDoc(doc(db, 'configuracion', 'responsables'), {
+              responsables: remoteList.map(cleanResponsableForFirestore)
+            }, { merge: true }).catch(console.warn);
+            setLastSyncTime(new Date());
           } else {
-            // Document does not exist yet: seed with local/initial data
-            const saved = localStorage.getItem('invResponsables_Pro');
-            const toSeed = saved ? JSON.parse(saved) : INITIAL_RESPONSABLES;
-            if (Array.isArray(toSeed) && toSeed.length > 0 && db) {
-              setDoc(doc(db, 'configuracion', 'responsables'), { responsables: toSeed }, { merge: true }).catch(console.warn);
-            }
+            // Check fallback configuracion/responsables in case they were stored in the legacy document
+            getDoc(doc(db, 'configuracion', 'responsables')).then(docSnap => {
+              if (docSnap.exists()) {
+                const data = docSnap.data();
+                if (Array.isArray(data?.responsables) && data.responsables.length > 0) {
+                  const fromConfig: ResponsableAlmacen[] = [];
+                  data.responsables.forEach((r: any) => {
+                    if (r && r.id && !deletedRespIds.has(r.id)) {
+                      fromConfig.push(parseResponsableDoc(r.id, r));
+                    }
+                  });
+                  if (fromConfig.length > 0) {
+                    setResponsables(fromConfig);
+                    localStorage.setItem('invResponsables_Pro', JSON.stringify(fromConfig));
+                    // Seed into collection 'responsables' so individual docs exist
+                    fromConfig.forEach(r => {
+                      setDoc(doc(db, 'responsables', r.id), cleanResponsableForFirestore(r), { merge: true }).catch(console.warn);
+                    });
+                    setLastSyncTime(new Date());
+                  }
+                }
+              }
+            }).catch(console.warn);
           }
         },
         error => {
-          console.warn("Firestore responsables listener notice:", error.message);
+          console.warn("Firestore collection responsables listener notice:", error.message);
+          // Fallback to reading legacy doc if collection listener has issues
+          getDoc(doc(db, 'configuracion', 'responsables')).then(docSnap => {
+            if (docSnap.exists()) {
+              const data = docSnap.data();
+              if (Array.isArray(data?.responsables)) {
+                const list = data.responsables
+                  .filter((r: any) => r && r.id && !deletedRespIds.has(r.id))
+                  .map((r: any) => parseResponsableDoc(r.id, r));
+                if (list.length > 0) {
+                  setResponsables(list);
+                  localStorage.setItem('invResponsables_Pro', JSON.stringify(list));
+                }
+              }
+            }
+          }).catch(console.warn);
         }
       );
     } catch (err) {
@@ -658,9 +744,10 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       // Sync settings & locations
       await setDoc(doc(db, 'configuracion', 'general'), appSettings, { merge: true });
       await setDoc(doc(db, 'configuracion', 'locations'), { ups }, { merge: true });
-      await setDoc(doc(db, 'configuracion', 'responsables'), { responsables }, { merge: true });
+      const cleanResponsablesList = responsables.map(cleanResponsableForFirestore);
+      await setDoc(doc(db, 'configuracion', 'responsables'), { responsables: cleanResponsablesList }, { merge: true });
       for (const resp of responsables) {
-        await setDoc(doc(db, 'responsables', resp.id), resp, { merge: true });
+        await setDoc(doc(db, 'responsables', resp.id), cleanResponsableForFirestore(resp), { merge: true });
       }
       for (const sol of solicitudes) {
         await setDoc(doc(db, 'solicitudes', sol.id), sol, { merge: true });
@@ -702,10 +789,11 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             canonicalTotals[cleanUp] = 0;
           }
 
-          if (t.tipo === 'entrada') {
+          const tipoClean = (t.tipo || '').trim().toLowerCase();
+          if (tipoClean === 'entrada' || tipoClean === 'ingreso' || tipoClean === 'recepcion' || tipoClean === 'recepción') {
             totalEntradas += qty;
             canonicalTotals[cleanUp] += qty;
-          } else if (t.tipo === 'salida') {
+          } else if (tipoClean === 'salida' || tipoClean === 'despacho' || tipoClean === 'consumo') {
             totalSalidas += qty;
             canonicalTotals[cleanUp] -= qty;
           }
@@ -741,8 +829,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Dashboard quick stats
   const stats = useMemo(() => {
     const totalItems = items.length;
-    const totalEntradas = transacciones.filter(t => t.tipo === 'entrada').length;
-    const totalSalidas = transacciones.filter(t => t.tipo === 'salida').length;
+    const totalEntradas = transacciones.filter(t => {
+      const tipo = (t.tipo || '').trim().toLowerCase();
+      return tipo === 'entrada' || tipo === 'ingreso' || tipo === 'recepcion' || tipo === 'recepción';
+    }).length;
+    const totalSalidas = transacciones.filter(t => {
+      const tipo = (t.tipo || '').trim().toLowerCase();
+      return tipo === 'salida' || tipo === 'despacho' || tipo === 'consumo';
+    }).length;
     const alertas = inventario.filter(i => i.stockTotal <= (i.reorden || 0)).length;
     return { totalItems, totalEntradas, totalSalidas, alertas };
   }, [items.length, transacciones, inventario]);
@@ -1117,8 +1211,14 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
+    const unit = currentItem.unidad || 'PZ';
+    const prevUpStock = currentItem.upStock[cleanUp] ?? currentItem.upStock[`UP ${cleanUp}`] ?? 0;
+    const prevGlobalStock = currentItem.stockTotal;
+    const finalUpStock = trans.tipo === 'entrada' ? (prevUpStock + parsedQty) : (prevUpStock - parsedQty);
+    const finalGlobalStock = trans.tipo === 'entrada' ? (prevGlobalStock + parsedQty) : (prevGlobalStock - parsedQty);
+
     showToast(
-      `${trans.tipo === 'entrada' ? 'Recepción (Entrada)' : 'Despacho (Salida)'} de ${parsedQty.toLocaleString()} PZ registrada con éxito en ${upToDisplay}`,
+      `${trans.tipo === 'entrada' ? 'Recepción (Entrada)' : 'Despacho (Salida)'} de ${parsedQty.toLocaleString()} ${unit} confirmada en ${upToDisplay}. Saldo en ${upToDisplay}: ${finalUpStock.toLocaleString()} ${unit} | Saldo Global: ${finalGlobalStock.toLocaleString()} ${unit}`,
       'success'
     );
     return true;
@@ -1443,12 +1543,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return false;
     }
 
+    const newId = 'resp-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 7);
     const newResp: ResponsableAlmacen = {
-      ...data,
-      id: 'resp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      id: newId,
       nombre: cleanNombre,
-      cargo: data.cargo.trim() || 'Encargado de Almacén',
+      cargo: (data.cargo || 'Encargado de Almacén').trim(),
       up: cleanUp,
+      telefono: data.telefono?.trim() || '',
+      email: data.email?.trim() || '',
+      notas: data.notas?.trim() || '',
+      activo: data.activo !== false,
       fechaCreacion: new Date().toISOString()
     };
 
@@ -1458,13 +1562,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     if (db) {
       try {
+        const firestoreDoc = cleanResponsableForFirestore(newResp);
+        const updatedClean = updated.map(cleanResponsableForFirestore);
         await Promise.all([
-          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
-          setDoc(doc(db, 'responsables', newResp.id), newResp, { merge: true })
+          setDoc(doc(db, 'responsables', newId), firestoreDoc, { merge: true }),
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updatedClean }, { merge: true })
         ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
+        console.warn("Firestore addResponsable error:", err);
+        handleFirestoreError(err, OperationType.CREATE, `responsables/${newId}`);
       }
     }
 
@@ -1482,25 +1589,44 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const target = responsables.find(r => r.id === id);
     if (!target) return false;
 
-    if (!isGlobalAccess && !isUpAuthorized(target.up)) {
-      showToast(`No tienes permisos para editar responsables en la UP ${target.up}`, 'error');
+    const newUpClean = updates.up
+      ? updates.up.trim().toUpperCase().replace(/^UP\s+/, '')
+      : target.up;
+
+    if (!isGlobalAccess && (!isUpAuthorized(target.up) || !isUpAuthorized(newUpClean))) {
+      showToast(`No tienes permisos para asignar responsables a la UP ${newUpClean}`, 'error');
       return false;
     }
 
-    const updated = responsables.map(r => r.id === id ? { ...r, ...updates } : r);
+    const mergedObj: ResponsableAlmacen = {
+      ...target,
+      ...updates,
+      id,
+      nombre: (updates.nombre !== undefined ? updates.nombre : target.nombre).trim(),
+      cargo: (updates.cargo !== undefined ? updates.cargo : target.cargo).trim(),
+      up: newUpClean,
+      telefono: updates.telefono !== undefined ? (updates.telefono?.trim() || '') : (target.telefono || ''),
+      email: updates.email !== undefined ? (updates.email?.trim() || '') : (target.email || ''),
+      notas: updates.notas !== undefined ? (updates.notas?.trim() || '') : (target.notas || ''),
+      activo: updates.activo !== undefined ? Boolean(updates.activo) : target.activo
+    };
+
+    const updated = responsables.map(r => r.id === id ? mergedObj : r);
     setResponsables(updated);
     localStorage.setItem('invResponsables_Pro', JSON.stringify(updated));
 
     if (db) {
       try {
-        const mergedObj = { ...target, ...updates };
+        const firestoreDoc = cleanResponsableForFirestore(mergedObj);
+        const updatedClean = updated.map(cleanResponsableForFirestore);
         await Promise.all([
-          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
-          setDoc(doc(db, 'responsables', id), mergedObj, { merge: true })
+          setDoc(doc(db, 'responsables', id), firestoreDoc, { merge: true }),
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updatedClean }, { merge: true })
         ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
+        console.warn("Firestore updateResponsable error:", err);
+        handleFirestoreError(err, OperationType.UPDATE, `responsables/${id}`);
       }
     }
 
@@ -1535,19 +1661,31 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       return false;
     }
 
+    // Save to tombstone list to prevent resurrecting deleted item
+    try {
+      const savedDeleted = localStorage.getItem('invDeletedResp_Pro');
+      const parsed = savedDeleted ? JSON.parse(savedDeleted) : [];
+      const updatedDeleted = Array.from(new Set([...(Array.isArray(parsed) ? parsed : []), id]));
+      localStorage.setItem('invDeletedResp_Pro', JSON.stringify(updatedDeleted));
+    } catch {
+      // Ignore
+    }
+
     const updated = responsables.filter(r => r.id !== id);
     setResponsables(updated);
     localStorage.setItem('invResponsables_Pro', JSON.stringify(updated));
 
     if (db) {
       try {
+        const updatedClean = updated.map(cleanResponsableForFirestore);
         await Promise.all([
-          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updated }, { merge: true }),
-          deleteDoc(doc(db, 'responsables', id)).catch(() => {})
+          deleteDoc(doc(db, 'responsables', id)).catch(() => {}),
+          setDoc(doc(db, 'configuracion', 'responsables'), { responsables: updatedClean }, { merge: true })
         ]);
         setLastSyncTime(new Date());
       } catch (err: any) {
-        handleFirestoreError(err, OperationType.UPDATE, 'configuracion/responsables');
+        console.warn("Firestore deleteResponsable error:", err);
+        handleFirestoreError(err, OperationType.DELETE, `responsables/${id}`);
       }
     }
 
@@ -1630,7 +1768,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           idDoc,
           tipo: tipoMovimiento,
           itemId: item.itemId.trim().toUpperCase(),
-          qty: Math.max(1, Number(item.cantidad) || 1),
+          qty: (Number(item.cantidad) > 0 ? Number(item.cantidad) : 1),
           up: upClean,
           fecha: data.fecha || new Date().toISOString().split('T')[0],
           notas: `Ingreso Solicitud ${folio}: Solicitado por ${data.solicitante}${data.areaAplicacion ? ` (${data.areaAplicacion})` : ''}`,
@@ -1771,7 +1909,7 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           idDoc,
           tipo: tipoMovimiento,
           itemId: item.itemId.trim().toUpperCase(),
-          qty: Math.max(1, Number(item.cantidad) || 1),
+          qty: (Number(item.cantidad) > 0 ? Number(item.cantidad) : 1),
           up: targetUpClean,
           fecha: new Date().toISOString().split('T')[0],
           notas: `Ingreso Solicitud Aprobada ${target.folio}: ${target.solicitante}`,

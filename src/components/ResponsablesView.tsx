@@ -138,9 +138,9 @@ export const ResponsablesView: React.FC = () => {
         nombre: nombre.trim(),
         up,
         cargo: finalCargo,
-        telefono: telefono.trim() || undefined,
-        email: email.trim() || undefined,
-        notas: notas.trim() || undefined,
+        telefono: telefono.trim(),
+        email: email.trim(),
+        notas: notas.trim(),
         activo: true
       });
 
@@ -179,9 +179,9 @@ export const ResponsablesView: React.FC = () => {
       nombre: editingResp.nombre.trim(),
       cargo: editingResp.cargo.trim(),
       up: editingResp.up,
-      telefono: editingResp.telefono?.trim() || undefined,
-      email: editingResp.email?.trim() || undefined,
-      notas: editingResp.notas?.trim() || undefined,
+      telefono: editingResp.telefono ? editingResp.telefono.trim() : '',
+      email: editingResp.email ? editingResp.email.trim() : '',
+      notas: editingResp.notas ? editingResp.notas.trim() : '',
       activo: editingResp.activo
     });
 
@@ -315,27 +315,39 @@ export const ResponsablesView: React.FC = () => {
               </label>
               {isGlobalAccess ? (
                 <select
-                  value={up}
+                  value={(up || '').trim().toUpperCase().replace(/^UP\s+/, '')}
                   onChange={e => setUp(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none text-xs"
                 >
-                  {ups.map(u => (
-                    <option key={u} value={u}>
-                      {u} {responsables.some(r => r.up.toUpperCase() === u.toUpperCase() && r.activo) ? '✓' : '(Sin asignar)'}
-                    </option>
-                  ))}
+                  {ups.map(u => {
+                    const cleanU = u.trim().toUpperCase().replace(/^UP\s+/, '');
+                    const hasActive = responsables.some(
+                      r => (r.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === cleanU && r.activo
+                    );
+                    return (
+                      <option key={cleanU} value={cleanU}>
+                        UP {cleanU} {hasActive ? '✓' : '(Sin asignar)'}
+                      </option>
+                    );
+                  })}
                 </select>
               ) : userAllowedUps.length > 1 ? (
                 <select
-                  value={up}
+                  value={(up || '').trim().toUpperCase().replace(/^UP\s+/, '')}
                   onChange={e => setUp(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-white border border-gray-200 rounded-xl font-semibold text-teal-900 focus:ring-2 focus:ring-teal-500 outline-none text-xs"
                 >
-                  {userAllowedUps.map(u => (
-                    <option key={u} value={u}>
-                      {u} {responsables.some(r => r.up.toUpperCase() === u.toUpperCase() && r.activo) ? '✓' : '(Sin asignar)'}
-                    </option>
-                  ))}
+                  {userAllowedUps.map(u => {
+                    const cleanU = u.trim().toUpperCase().replace(/^UP\s+/, '');
+                    const hasActive = responsables.some(
+                      r => (r.up || '').trim().toUpperCase().replace(/^UP\s+/, '') === cleanU && r.activo
+                    );
+                    return (
+                      <option key={cleanU} value={cleanU}>
+                        UP {cleanU} {hasActive ? '✓' : '(Sin asignar)'}
+                      </option>
+                    );
+                  })}
                 </select>
               ) : (
                 <div className="w-full px-3.5 py-2.5 bg-teal-50/70 border border-teal-200 rounded-xl font-bold text-teal-900 flex items-center gap-2 text-xs">
@@ -689,13 +701,16 @@ export const ResponsablesView: React.FC = () => {
                   UP Asignada *
                 </label>
                 <select
-                  value={editingResp.up}
+                  value={(editingResp.up || '').trim().toUpperCase().replace(/^UP\s+/, '')}
                   onChange={e => setEditingResp({ ...editingResp, up: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-200 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-teal-500 outline-none text-xs"
                 >
-                  {effectiveUps.map(u => (
-                    <option key={u} value={u}>{u}</option>
-                  ))}
+                  {effectiveUps.map(u => {
+                    const cleanU = u.trim().toUpperCase().replace(/^UP\s+/, '');
+                    return (
+                      <option key={cleanU} value={cleanU}>UP {cleanU}</option>
+                    );
+                  })}
                 </select>
               </div>
 
